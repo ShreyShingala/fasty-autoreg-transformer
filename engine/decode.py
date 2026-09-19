@@ -10,6 +10,8 @@ import torch
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
 from kernels.linear import linear
+from kernels.qk_rope import qk_rope_cache
+from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
 
 
@@ -147,6 +149,17 @@ class DecodeState:
                 layer.self_attn.o_proj.weight,
             ):
                 linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+        # Likewise the launch widths of the small per-layer decode kernels.
+        layer = model.model.layers[0]
+        hidden = weight.new_zeros((batch, 1, weight.shape[1]))
+        add_rms_norm(hidden, hidden, layer.input_layernorm.weight, layer.input_layernorm.variance_epsilon)
+        swiglu(weight.new_zeros((batch, 1, layer.mlp.gate_up_weight.shape[0])))
+        attention = layer.self_attn
+        qk_rope_cache(
+            weight.new_zeros((batch, 1, attention.qkv_weight.shape[0])), attention.q_norm, attention.k_norm,
+            self.cos[:, :1, :].contiguous(), self.sin[:, :1, :].contiguous(), self.position,
+            self.cache.keys[0], self.cache.values[0], model.config.num_attention_heads,
+        )
         # Choose the dense attention interval layout here, on the ordinary
         # stream and at this shape's prompt length, never inside a capture.
         attention = model.model.layers[0].self_attn

@@ -8,6 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.tune import pick
+
 #: One row must fit in one block. Qwen3 4B norms 2560 columns (hidden) and 128
 #: (per-head q/k norm), so both land well inside this.
 MAX_BLOCK = 8192
@@ -100,8 +102,15 @@ def add_rms_norm(x, residual, weight, eps):
     residual_rows = residual.reshape(-1, width).contiguous()
     out = torch.empty_like(x_rows)
     summed = torch.empty_like(x_rows)
-    _add_rms_norm_kernel[(x_rows.shape[0],)](
-        x_rows, residual_rows, weight, out, summed,
-        WIDTH=width, EPS=eps, BLOCK=block, num_warps=4,
-    )
+    rows = x_rows.shape[0]
+
+    def launch(warps):
+        _add_rms_norm_kernel[(rows,)](
+            x_rows, residual_rows, weight, out, summed,
+            WIDTH=width, EPS=eps, BLOCK=block, num_warps=warps,
+        )
+
+    # Decode rows are launch-bound: measure the block width once per shape.
+    warps = pick(("add_rms_norm", rows, width), 4, (1, 2, 8), launch) if rows <= 16 else 4
+    launch(warps)
     return out.reshape(shape), summed.reshape(shape)

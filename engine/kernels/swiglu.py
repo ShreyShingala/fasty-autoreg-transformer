@@ -4,6 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.tune import pick
+
 
 @triton.jit
 def _swiglu(packed, output, WIDTH: tl.constexpr, BLOCK: tl.constexpr):
@@ -23,5 +25,9 @@ def swiglu(packed):
     width = packed.shape[-1] // 2
     output = torch.empty((*packed.shape[:-1], width), device=packed.device, dtype=packed.dtype)
     rows = output.numel() // width
-    _swiglu[(rows, triton.cdiv(width, 1024))](packed, output, WIDTH=width, BLOCK=1024)
+
+    def launch(warps):
+        _swiglu[(rows, triton.cdiv(width, 1024))](packed, output, WIDTH=width, BLOCK=1024, num_warps=warps)
+
+    launch(pick(("swiglu", rows, width), 4, (1, 2, 8), launch) if rows <= 16 else 4)
     return output

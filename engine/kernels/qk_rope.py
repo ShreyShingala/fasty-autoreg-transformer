@@ -4,6 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.tune import pick
+
 
 @triton.jit
 def _qk_rope_cache(
@@ -81,11 +83,15 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
     # Token-major storage: Flash then returns a token-major output, so the
     # caller's transpose back to [B,T,Hq,D] is already contiguous.
     query = torch.empty((batch, tokens, q_heads, dim), device=packed.device, dtype=packed.dtype)
-    _qk_rope_cache[(batch * tokens, q_heads + kv_heads)](
-        packed, q_norm.weight, k_norm.weight, cos, sin, position, query, keys, values,
-        Q_HEADS=q_heads, KV_HEADS=kv_heads, DIM=dim, CAPACITY=capacity,
-        Q_EPS=q_norm.variance_epsilon, K_EPS=k_norm.variance_epsilon,
-        TOKENS=tokens, PREFILL=prefill, BLOCK=triton.next_power_of_2(dim),
-        num_warps=1 if prefill else 4,
-    )
+    def launch(warps):
+        _qk_rope_cache[(batch * tokens, q_heads + kv_heads)](
+            packed, q_norm.weight, k_norm.weight, cos, sin, position, query, keys, values,
+            Q_HEADS=q_heads, KV_HEADS=kv_heads, DIM=dim, CAPACITY=capacity,
+            Q_EPS=q_norm.variance_epsilon, K_EPS=k_norm.variance_epsilon,
+            TOKENS=tokens, PREFILL=prefill, BLOCK=triton.next_power_of_2(dim),
+            num_warps=warps,
+        )
+
+    # Every option writes the same slots with the same values.
+    launch(1 if prefill else pick(("qk_rope", batch, q_heads, kv_heads, dim, capacity), 4, (1, 2), launch))
     return query.transpose(1, 2)
