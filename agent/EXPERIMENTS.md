@@ -801,6 +801,21 @@ log-probabilities from a newline-prefixed context gives 15.3% / 30.6% / 38.9%;
 a corpus-statistics predictor (not available to the engine) reaches about
 18% / 33%.
 
+Analyst note (aggregate responses only; inferring hidden shapes is out of
+bounds and was not done): for candidates 1-19, log(score) = c - 0.19 log(TTFT
+long prompt) - 0.79 log(TPOT) with 0.5% residual, so a 10% decode gain is worth
+about 7.9% of score and a 10% prefill gain about 1.9%. Run-to-run sd is about
+0.5%; a byte-identical pair differed by 1.3%: treat differences under 1% as
+unresolved. The batch 2-8 speculative path carries most of the speculative
+gain; batch-one changes move the score with elasticity 0.10-0.15; batch 9-16
+drafting is neutral.
+
+## Candidate 40 — block-attention interval layout as a verify-graph knob
+
+The verify block's attention inherited the plain-decode tiling. Register four
+alternative (tile, intervals) layouts and let `refine` (16 s) judge them in the
+captured verify graph; same dense attention, different partition.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

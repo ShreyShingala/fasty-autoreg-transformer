@@ -146,6 +146,7 @@ def _graph_time(fn):
 
 
 _CONFIGS = {}
+_BLOCK_LAYOUTS = {}
 _TUNING_SECONDS = 10.0
 
 
@@ -324,7 +325,23 @@ def block_attention(query, key, value, position, scale, chain):
     assert chain.shape == (batch,) and chain.dtype == torch.int64
     groups = query_heads // kv_heads
     members = tokens * groups
-    block_n, splits, warps = _default_config(batch, kv_heads, capacity)
+    shape = (query.device, batch, tokens, query_heads, kv_heads, capacity, dim)
+    if shape not in _BLOCK_LAYOUTS:
+        # Start from the decode default; the captured verify graph re-judges
+        # the alternatives (same dense attention, different interval tiling).
+        default = _default_config(batch, kv_heads, capacity)
+        options = [default]
+        for block_n, splits in ((128, default[1] // 2), (64, default[1] * 2), (32, default[1] * 2), (128, default[1])):
+            option = (block_n, max(1, min(32, splits, triton.cdiv(capacity, block_n))), 4)
+            if option not in options:
+                options.append(option)
+        _BLOCK_LAYOUTS[shape] = default
+        if not torch.cuda.is_current_stream_capturing():
+            register(
+                ("block_attention",) + shape[1:], batch * tokens, 1 << 41, options,
+                lambda: _BLOCK_LAYOUTS[shape], lambda option: _BLOCK_LAYOUTS.__setitem__(shape, option),
+            )
+    block_n, splits, warps = _BLOCK_LAYOUTS[shape]
     chunk = triton.cdiv(capacity, splits)
     partial = torch.empty((batch * kv_heads, splits, members, dim), device=query.device, dtype=torch.float32)
     stats = torch.empty((batch * kv_heads, splits, members, 2), device=query.device, dtype=torch.float32)
