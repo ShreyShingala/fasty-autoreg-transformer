@@ -10,24 +10,27 @@ their one idea - refine each block size before comparing - is in c60), dryfter
 Progress today: c48 1095.1 -> c53 1097.7 (GEMM tiles, keep_native) -> c54
 1115.0 (two-stage Triton argmax + trimmed budgets) -> c57 1129.7 (stale-guess
 sibling + cuDNN prefill option + frozen GC).
-c58 (32 MiB cuBLAS workspace) = 1111.9 and c62 (`8d34093`: refine-before-compare
-+ hoisted GEMM candidate + mask-free attention tiles + traffic-ordered tuning) =
-1090.2: both below c57, but their nodes were slower (CONTROL: native's prefill
-TTFT on public-1/2 is GPU-bound and measured in the same run; c57 202.3/192.0,
-c58 203.7/193.5, c62 205.4/195.0 ms). Normalized: c58 -0.9%, c62 about -2%.
-Measuring: c66 `da6c794` (c62 + warmup bundle: frozen heap before captures,
-one eager pass per refine option, split-aware projection tuning, prefill tuners
-removed, `_PROCESS_SECONDS` 24, attention knob in traffic order). Queued: c67
-`822ce98` (+ TMA descriptor-load GEMM kind (fail-closed; a driver assert would
-abort the process = one lost slot), refine limited to the three fastest layouts,
-runtime COUNT in split consumers, successor table shares the newline KV,
-attention knob priority floor). Held locally: c68 `8c7343a` (tile GEMM for
-33-64-row blocks). IF c66 IS ALSO LOW: bisect c62 - dryfter's next run is c57 +
-only the mask-free attention loops (their fork copies our main: `git fetch
-https://github.com/john-jpet/fast-transformer +HEAD:refs/remotes/mate/main`),
-so watch their score for that part; then drop the hoisted candidate (restore
-gemm(256,128)) and the split refine budget.
-A self-scheduled cron tick (every 7 min, session-only) drives the loop.
+History since c57: c58 (32 MiB cuBLAS workspace) 1111.9 discard; c62 1090.2
+(slow node; batch-1 pass slower: the mask-free attention loops cost occupancy
+at batch 1); c66 1112.9 (warmup bundle: run 815 -> 763 s); **c67 `822ce98`
+1130.6 BEST, 612 s** (TMA descriptor-load GEMM kind + refine on the three
+fastest layouts + runtime COUNT + shared-newline successor table; batch-4 TPOT
+-7%, batch-16 -4%).
+Measuring: c69 `bc52548` (mask-free attention loop only when batch x capacity
+>= 6000, attention knob refined first again, tile GEMM for 33-64-row blocks).
+Queued: c70+c71 `73063f2` (pass time measured back to back; TTFT-aware pacing
+floor, clamp [0.60, 0.70]). Held locally, gated: c72 (refine budget 24 s,
+projection tuning 30 s: ~745 s runs), c73 (`tmah` = TMA weight loads + hoisted
+x, fail-closed twin `_hoist_trans_gemm`).
+Research in flight (reports land in `~/.cache/fasty-lab/plan/`):
+whole_system_review.md, triton31_hopper_features.md (source audit: TMA for
+attention K/V tiles, loop prefetch, num_ctas...), web_hopper_triton.md,
+exa_hopper_research.md (Exa API key in the scratchpad file `.exa_key`, user
+supplied; official Triton docs have "TMA in Gluon" and "Warp-Group MMA"
+tutorials). The organisers (Isaac) are raising GPU concurrency: queue waits
+should shrink. A self-scheduled cron tick (every 7 min, session-only) drives
+the loop; forks `john-jpet/fast-transformer` (dryfter, 1123.9 = our c57) and
+`sivakovivan/silver-transformer` copy our main within the hour.
 READ RESULTS WITH `cd agent/tools && python3 collect_runs.py | tail -1 && python3 report_runs.py`:
 one line per run with duration, the node-speed control (native prefill TTFT),
 the NORMALIZED score and public TTFT/TPOT probes. Normalized, c57 1129.7, c58
