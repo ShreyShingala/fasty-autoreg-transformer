@@ -663,6 +663,10 @@ seconds per token, warmup included). Timing only; no token state crosses
 generations. Lets tree drafts (wider speed distribution) run without the 0.75
 static floor binding the median.
 
+## Candidate 30 — full 9 + 7 tree for batches 1-2
+
+On top of candidates 28-29. Batch 2 becomes a 32-row block (skinny GEMM).
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

@@ -28,6 +28,10 @@ def block_shape(batch):
     the pass time, so its block stays small (candidate 26 lost 2.7% with long
     chains). (1, 0) means no speculation.
     """
+    if batch <= 2:
+        # Candidate 27: a 16-token block at batch one costs about 4.2 ms, like
+        # a 5-token one; offline it needs 7.5% fewer passes than 5 + 3.
+        return 9, 7
     if batch <= 4:
         return 5, 3
     if batch <= 8:
