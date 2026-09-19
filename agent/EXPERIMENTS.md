@@ -1180,3 +1180,16 @@ graph in hand already is the winner's, and the plain decode attention chooser
 no longer times its default when its search budget is zero. No token can
 change; smoke test and unit tests pass. External research reports (pasted by
 the user) triaged: only "copy-logit siblings" (RACER) was new - lab test running.
+
+## Candidate 64 - split-aware projection tuning (held)
+
+The warmup audit estimates 6.5-7.5 s of tuning per projection shape under the
+platform's gVisor host (each Triton compile spawns a slow `ptxas` subprocess),
+so the 18 s budget covers gate_up, down and part of qkv: o_proj and lm_head
+stay on cuBLAS with nothing for refine to try. Part of that time compiled and
+timed `_merge_projection`, which a verify block never launches (its consumers
+sum the FP32 partials themselves). `_choose` now validates split layouts
+through their partials and times each candidate the way its caller uses it
+(`split_ok`), so layer-projection tuning compiles no merge kernel: more shapes
+fit the same budget and timings match real use. Smoke test: merge launches
+195 -> 137, 0 mismatches.

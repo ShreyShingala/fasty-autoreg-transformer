@@ -195,7 +195,10 @@ def _candidates(m, n, k):
 def _agrees(probe, weight, config, reference):
     """Operator sanity check; a layout that fails to compile or launch is simply not offered."""
     try:
-        actual = _project(probe, weight, config).float()
+        # Split layouts are checked through their FP32 partials: the verify
+        # path never launches the merge kernel, so tuning need not compile it.
+        actual = _project(probe, weight, config, split_ok=True)
+        actual = actual.partial.sum(0) if isinstance(actual, Split) else actual.float()
         return bool(((actual - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
     except Exception as error:
         print(f"BF16 projection layout {config} skipped: {error!r}", flush=True)
@@ -225,7 +228,7 @@ def _inherit(x, weight):
     return None
 
 
-def _choose(x, weight):
+def _choose(x, weight, split_ok=False):
     global _TUNING_DEADLINE
     now = time.monotonic()
     if _TUNING_DEADLINE is None:
@@ -255,7 +258,7 @@ def _choose(x, weight):
         # correctness still comes from the platform's own-prefix replay.
         if not _agrees(probe, weight, config, reference):
             continue
-        elapsed = _cold_graph_time(lambda: _project(x, weight, config), flush)
+        elapsed = _cold_graph_time(lambda: _project(x, weight, config, split_ok), flush)
         validated.append((elapsed, config))
         if elapsed < best_ms * 0.985:
             best_ms, best = elapsed, config
@@ -263,7 +266,7 @@ def _choose(x, weight):
         # Recheck after compilation/tuning so GPU clock ramp-up cannot make a
         # later candidate look faster than an initially cold native baseline.
         native_ms = _cold_graph_time(lambda: F.linear(x, weight), flush)
-        best_ms = _cold_graph_time(lambda: _project(x, weight, best), flush)
+        best_ms = _cold_graph_time(lambda: _project(x, weight, best, split_ok), flush)
         if best_ms >= native_ms * 0.985:
             best_ms, best = native_ms, None
     print(f"BF16 projection warmup: backend={best or 'cublas'} cold_graph_ratio={best_ms / native_ms:.3f}", flush=True)
@@ -285,7 +288,8 @@ def linear(x, weight, split_ok=False):
     if key not in _CHOICES:
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("projection selection must finish during eager warmup")
-        _CHOICES[key] = _choose(flat, weight)
+        # Timed the way this caller will use it: with or without the merge launch.
+        _CHOICES[key] = _choose(flat, weight, split_ok)
         # None is cuBLAS. The captured decode step re-judges these layouts.
         # Refinement order = weight traffic per step: the vocabulary projection
         # runs once, every other projection once per layer (36 here).

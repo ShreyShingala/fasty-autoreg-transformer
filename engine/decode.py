@@ -319,7 +319,12 @@ class DecodeState:
             layer.self_attn.qkv_weight, layer.self_attn.o_proj.weight,
             model.lm_head.weight,
         ):
-            linear(projection.new_zeros((batch, tokens, projection.shape[1])), projection)
+            # Layer projections feed split-aware consumers in a verify block;
+            # the vocabulary projection feeds argmax and needs a merged tensor.
+            linear(
+                projection.new_zeros((batch, tokens, projection.shape[1])), projection,
+                split_ok=projection is not model.lm_head.weight,
+            )
         hidden = weight.new_zeros((batch, tokens, weight.shape[1]))
         add_rms_norm(hidden, hidden, layer.input_layernorm.weight, layer.input_layernorm.variance_epsilon)
         swiglu(weight.new_zeros((batch, tokens, layer.mlp.gate_up_weight.shape[0])))
