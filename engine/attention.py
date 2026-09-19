@@ -5,12 +5,13 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
 
-def grouped_sdpa(module, query, key, value, attention_mask, dropout=0.0, scaling=None, **kwargs):
+def grouped_sdpa(module, query, key, value, attention_mask, dropout=0.0, scaling=None, last_query=False, **kwargs):
     if attention_mask is None:
-        assert query.shape[2] == key.shape[2], "unmasked prefill must be square"
+        assert query.shape[2] == key.shape[2] or (last_query and query.shape[2] == 1)
         # PyTorch 2.5.1's CUDA Flash backend supports GQA and noncontiguous
         # outer strides. Avoid the HF adapter's repeated KV tensors and its
-        # three contiguous copies. Prefill is square and unpadded here.
+        # three contiguous copies. The last query may read the full prefix
+        # noncausally because no key is later than its absolute position.
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             output = torch.nn.functional.scaled_dot_product_attention(
                 query, key, value, dropout_p=dropout, scale=scaling,

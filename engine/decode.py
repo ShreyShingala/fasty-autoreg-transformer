@@ -76,7 +76,8 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
     base = model.model
     hidden = base.embed_tokens(token_ids)
     residual = None
-    for layer in base.layers:
+    for index, layer in enumerate(base.layers):
+        last_token_only = cache.prefilling and token_ids.shape[1] > 1 and index == len(base.layers) - 1
         if residual is None:
             residual = hidden
             normalized = layer.input_layernorm(hidden)
@@ -95,7 +96,12 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
             use_cache=True,
             cache_position=position,
             position_embeddings=rope,
+            last_token_only=last_token_only,
         )[0]
+        if last_token_only:
+            # Final-layer historical MLP outputs never feed another layer or
+            # the KV cache. All final-layer K/V entries were still computed.
+            residual = residual[:, -1:, :]
         normalized, residual = add_rms_norm(
             attention, residual, layer.post_attention_layernorm.weight,
             layer.post_attention_layernorm.variance_epsilon,
