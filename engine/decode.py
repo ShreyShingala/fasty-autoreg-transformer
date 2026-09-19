@@ -5,12 +5,18 @@ decode attention reads the valid prefix using a GPU position. Weights and KV
 storage remain BF16; fused pointwise operations preserve native cast boundaries.
 """
 
+import time
+
 import torch
 
 from kernels import packed as packing
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
+from kernels.linear import current as projection_current
+from kernels.linear import decode_keys as projection_keys
 from kernels.linear import linear
+from kernels.linear import options as projection_options
+from kernels.linear import select as select_projection
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
@@ -182,11 +188,19 @@ class DecodeState:
         )
         # Choose the dense attention interval layout here, on the ordinary
         # stream and at this shape's prompt length, never inside a capture.
+        # Random Q/K/V make the layouts' agreement check meaningful; the
+        # cache returns to zeros and every real slot is rewritten before use.
         attention = model.model.layers[0].self_attn
-        decode_attention(
-            weight.new_zeros((batch, model.config.num_attention_heads, 1, attention.head_dim)),
-            self.cache.keys[0], self.cache.values[0], self.position, attention.scaling,
+        generator = torch.Generator(device=self.device).manual_seed(2718)
+        probe = torch.randn(
+            (batch, model.config.num_attention_heads, 1, attention.head_dim),
+            device=self.device, dtype=weight.dtype, generator=generator,
         )
+        self.cache.keys[0].normal_(generator=generator)
+        self.cache.values[0].normal_(generator=generator)
+        decode_attention(probe, self.cache.keys[0], self.cache.values[0], self.position, attention.scaling)
+        self.cache.keys[0].zero_()
+        self.cache.values[0].zero_()
         # One host row and one event per output step. Decode replays are
         # enqueued ahead of the consumer; each row is an ordered snapshot of
         # ``token_ids`` taken between two replays on the same stream.
@@ -201,6 +215,7 @@ class DecodeState:
         self.capture_prefill()
         if output_length > 1:
             self.capture()
+            self.refine()
 
     def decode(self):
         rope = (
@@ -232,6 +247,52 @@ class DecodeState:
         with torch.cuda.graph(self.graph, stream=stream):
             self.decode()
         current.wait_stream(stream)
+
+    def step_ms(self):
+        """Median time of one replay of the captured decode graph, in situ."""
+        steps = max(1, min(24, self.shape[2] - 1))
+        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        times = []
+        for index in range(4):
+            # Stay inside the cache: every round restarts after the prompt.
+            self.position.fill_(self.shape[1])
+            start.record()
+            for _ in range(steps):
+                self.graph.replay()
+            end.record()
+            end.synchronize()
+            if index:
+                times.append(start.elapsed_time(end) / steps)
+        self.position.fill_(self.shape[1])
+        return sorted(times)[len(times) // 2]
+
+    def refine(self, seconds=45.0):
+        """Keep a projection layout only if the real decode step gets faster.
+
+        Isolated kernel timings pick the starting layouts, but official runs
+        showed they can disagree with the captured step. Try each shape's other
+        validated layouts inside the actual graph, largest traffic first. Every
+        option already passed the operator checks; only speed is decided here,
+        during warmup, and the final graph is fixed before any measured sample.
+        """
+        deadline = time.monotonic() + seconds
+        rows = self.shape[0]
+        best = self.step_ms()
+        for key in projection_keys(rows):
+            chosen = projection_current(key)
+            for option in projection_options(key):
+                if option == chosen:
+                    continue
+                if time.monotonic() >= deadline:
+                    break
+                select_projection(key, option)
+                self.capture()
+                elapsed = self.step_ms()
+                if elapsed < best * 0.995:
+                    best, chosen = elapsed, option
+            select_projection(key, chosen)
+        self.capture()
+        self.token_ids.zero_()
 
     def prefill_forward(self):
         length = self.shape[1]
