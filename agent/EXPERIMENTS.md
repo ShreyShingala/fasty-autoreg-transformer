@@ -979,3 +979,24 @@ origin `https://htn.dryft.ai` successfully routes to the upgraded backend:
 `dryft doctor` reported authentication OK, matching archive limits, no warnings.
 Saved that origin in the ignored local `.env`; retained the token privately.
 Recovered the existing candidate-4 run without creating a duplicate.
+
+Result (candidate 48, stack of 45+47+48): commit `b1ca1cc` succeeded, ranked
+**1095.135** — new best, #1. public 310.6 / 527.1 / 3224.2; whole run 710 s
+(candidate 44: 667 s; the cap is 900 s, so warmup additions must stay bounded
+by the existing tuning deadlines). Within noise of candidate 44 on the score,
+public-0 +3%, public-1 -3%: keep, no clear single-case signal.
+
+## Candidate 51 — mask-free and transposed GEMM tiles, whole-block splits (held locally)
+
+From the lab's GEMM variant study (`~/.cache/fasty-lab/gemm_variants`): the
+incumbent's power-of-two split count leaves one of qkv's 8 split programs
+entirely masked (K=2560: 8 x 384 > 2560) and a ragged last split for down
+(K=9728). `kernels/gemm.py` adds `exact` (masks compiled in only where an axis
+is ragged; 5 splits for K=2560, 4 for K=9728) and `trans` (w-tile @ x-tile^T so
+the 64-row first operand selects the wider mma fragments). Offered as verify
+block candidates (m > 4) in place of gemm(128,128); `_choose` checks them
+against F.linear on a probe and `refine` judges them in the real graph.
+Checks: `agent/local_cpu/compile_gemm_tiles.py` (grid/constants recorded from
+the real `_project`, cuda:90 compile on all four projection shapes, numpy
+replay of the pointer arithmetic: in-bounds, every cell once, FP64 product),
+consumers compile with 5 and 4 splits. Commit `53063e7`, not pushed yet.
