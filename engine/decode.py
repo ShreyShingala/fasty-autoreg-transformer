@@ -268,26 +268,31 @@ class DecodeState:
         """Buffers, and eager shape probes for verify blocks of block_size tokens per row."""
         batch, prompt_length, output_length = self.shape
         tokens = self.block_size
-        size = self.capacity + 2
-        self.history = torch.zeros((batch, size), dtype=torch.int64, device=self.device)
-        self.history_index = torch.arange(size, device=self.device)
-        # Filled by every pass: each row's chain length (trusted token included)
-        # and each block token's RoPE offset (the chain counts up, alternatives
-        # stand where draft 1 stands). KV slots are simply position + t.
-        self.chains = torch.ones(batch, dtype=torch.int64, device=self.device)
+        if not hasattr(self, "history"):
+            # Buffers the captured PREFILL graph also writes (history, row
+            # positions) are allocated exactly once: choosing a block size
+            # re-runs this method, and the prefill graph keeps their addresses.
+            size = self.capacity + 2
+            self.history = torch.zeros((batch, size), dtype=torch.int64, device=self.device)
+            self.history_index = torch.arange(size, device=self.device)
+            self.row_position = torch.full((batch,), prompt_length, dtype=torch.int64, device=self.device)
+            # Index of the last requested token: rows stop there.
+            self.limit = torch.full((batch,), prompt_length + output_length - 1, dtype=torch.int64, device=self.device)
+            # Filled by every pass: each row's chain length (trusted token included).
+            self.chains = torch.ones(batch, dtype=torch.int64, device=self.device)
+            self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
+            self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
+            self.cache.chain = self.chains
+            self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
+        # Per block size: each block token's RoPE offset (the chain counts up,
+        # alternatives stand where draft 1 stands; KV slots are position + t),
+        # the pass result and its pinned host mirror.
         self.phases = torch.zeros((batch, tokens), dtype=torch.int64, device=self.device)
-        self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
-        self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
-        self.cache.chain = self.chains
-        self.row_position = torch.full((batch,), prompt_length, dtype=torch.int64, device=self.device)
-        # Index of the last requested token: rows stop there.
-        self.limit = torch.full((batch,), prompt_length + output_length - 1, dtype=torch.int64, device=self.device)
         self.result = torch.zeros((batch, tokens + 1), dtype=torch.int64, device=self.device)
         try:
             self.host_passes = torch.empty((output_length, batch, tokens + 1), dtype=torch.int64, pin_memory=True)
         except RuntimeError:
             self.host_passes = torch.empty((output_length, batch, tokens + 1), dtype=torch.int64)
-        self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
         self.tokens, self.passes_enqueued, self.passes_read = [], 0, 0
         self.started, self.pace_seconds, self.pass_seconds = 0.0, 0.0, 0.0
         # Unpaced seconds per token of earlier generations in this process.

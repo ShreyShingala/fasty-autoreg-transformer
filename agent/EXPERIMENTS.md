@@ -879,6 +879,18 @@ the smaller (pass time x expected passes per token, `EXPECTED_PASSES` from the
 lab shrunk by the platform's observed factor). Shape-only, decided once at
 warmup. Costs one extra prepare + capture where the two candidates differ.
 
+Result (candidate 37): commit `039a52e`, run `628d6c61` succeeded, ranked
+**1063.293** (11.0-minute run). public 289.2 / 526.5 / 3101.9. Inside the noise
+band of everything since candidate 29 (about 1065 +/- 10).
+
+Candidate 46 was canceled before running: a Codex review found that re-running
+`prepare_speculation` for the second block size replaced `history` and
+`row_position` while the already-captured prefill graph kept writing the old
+tensors (positions would never reset). Candidate 47 allocates every buffer the
+prefill graph touches exactly once.
+
+## Candidate 47 — candidate 46 with persistent prefill-visible buffers
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
