@@ -201,7 +201,9 @@ score. The whole-run limit also requires keeping compilation bounded.
 Commit `af06883`, deployment `32243a3f-65a5-4f62-82bd-1b6654568831`, was
 received by the backend at 06:40 UTC. Deployment import queued for several
 minutes before creating official run `ac98eaff-fa1d-42fc-97cc-1c1e32752515`.
-Its measurement is in progress. No duplicate run was created.
+Result: the run succeeded and ranked at **843.309 tokens/s**, up **6.82%**.
+Public TTFT was 25.024/161.009/149.897 ms; TPOT was 4.163/4.709/4.807 ms.
+All gates passed. No duplicate run was created.
 
 ## Candidate 7 — native Flash GQA and CUDA-graph prefill
 
@@ -222,9 +224,268 @@ each generation before any continuation is read.
 Read-only Claude review found no blocking graph-state, stream-ordering or
 GQA-compatibility defect. GPU verification additionally covers strided inputs,
 one-token prompts, one output, and short-prefill projection tuning. H100
-correctness, peak memory and score remain to be measured.
+correctness, peak memory and score required an official run.
+
+Result: commit `f565305f877729f4d4e7d220b5febc8505f5a031` passed official run
+`adde3397-e4db-43cd-8714-5c4ed204156f`, ranked **872.993 tokens/s**, up **3.52%**.
+Public TTFT was 13.063/149.839/138.366 ms; TPOT was 4.085/4.643/4.724 ms.
+Public throughput was 228.824/435.729/2774.159 tokens/s. All gates passed;
+aggregate peak memory was 16,042,754,048 bytes. This is the measured fallback.
+The run finished at 07:05:46 UTC on September 19 and its result was retrieved
+after a transient network failure in the monitoring process.
 
 Source: [PyTorch 2.5.1 CUDA SDPA eligibility](https://github.com/pytorch/pytorch/blob/v2.5.1/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp).
+
+## Candidate 8 — prefill Q/K fusion and final-layer last-query evaluation
+
+Uncommitted work in `engine/attention.py`, `engine/decode.py`,
+`engine/kernels/qk_rope.py`, and `engine/layers.py`. Extend the existing Q/K
+normalization, RoPE and cache-write kernel to all prompt tokens. The final layer
+still computes and stores every prompt K/V entry, but only its final query
+requires attention output, output projection and MLP evaluation. That query
+attends the whole prefix without a causal mask because no key is in its future.
+
+No H100 result yet. Remaining work includes explicit multi-token fused-kernel
+checks, independent review, fresh archive validation and an official run.
+Do not label this candidate correct or faster based on protocol tests.
+
+Review changes before submission (Claude, 2026-09-19): the final-layer last
+query now calls the already H100-validated `decode_attention` kernel with
+`cache_position[-1:]` instead of an untested Flash `q_len=1` GQA call. The
+kernel's flat-offset algebra was checked in pure Python against Torch layouts
+for B>1, odd T, prefill and decode, including untouched cache tails. The Triton
+3.1 interpreter in the emulated AMD64 container returned zeros even for a
+trivial store, so it was abandoned as a verification route. Commit `8f6dbb5`,
+submission `952190c4-ef25-4c82-a213-d0707b3be28e`, official run
+`b3fef7c0-bd7a-426f-973a-220b6feb0f9b`.
+
+Result: run `b3fef7c0-bd7a-426f-973a-220b6feb0f9b` succeeded and ranked at
+**885.900 tokens/s**, up **1.48%**; all gates passed. Public TTFT fell to
+10.83/122.39/112.72 ms (from 13.06/149.84/138.37). Public TPOT read
+4.193/4.770/4.877 ms (from 4.085/4.643/4.724), but native TPOT in the same
+container was 25.3/27.1/26.6 ms versus 18.5/21.1/22.7 in the candidate-7 run:
+this host was slower, so part of our TPOT is host-bound rather than GPU-bound.
+Public throughput 227.1/473.1/2803.8 tokens/s. Candidate 8 is the fallback.
+
+## Candidate 9 — bounded-lookahead asynchronous token streaming
+
+Hypothesis: each decode step currently waits for the consumer (`.tolist()`
+sync, yield, harness pipe write under gVisor, next `replay`), idling the GPU.
+Enqueue up to four decode replays ahead; after each replay copy `token_ids`
+to a pinned host row (ordered on the same stream) and record an event. The
+generator waits on event i and yields row i. No arithmetic changes. Never
+enqueues beyond `max_new_tokens`; an abandoned generator leaves at most four
+steps, which precede the next prefill on the stream. Affected cost: TPOT at
+every batch size. Risk: ordering/state bugs, pinned allocation under gVisor
+(falls back to pageable). Fallback: candidate 8.
+
+Result: commit `dd09e1c`, run `8182603c-9301-4f25-a715-a71e1d1e2c73` succeeded
+and ranked at **925.996 tokens/s**, up **4.53%**; all gates passed. Public TPOT
+3.958/4.552/4.629 ms (from 4.193/4.770/4.877 in a comparable-host run): the
+consumer gap was about 0.24 ms per step at every batch size. TTFT unchanged at
+10.94/121.08/111.70 ms. Throughput 239.3/488.2/2926.8 tokens/s. An independent
+read-only review found no concrete defect. TPOT is now GPU step time.
+
+## Candidate 10 — wider bounded projection layout search
+
+Hypothesis: projections are most of decode's memory traffic, and the 12-second
+process deadline probably expires before the last shapes (QKV, O) are measured.
+Give each shape 10 s within a 50 s process budget and add GEMV layouts
+(16x256, 4x1024, 8x1024 with 8 warps, split-4 for long reductions) and GEMM
+tiles (32x256, 128x128, 32x128). Kernels are unchanged; selection remains
+measured against cuBLAS, frozen before capture. Risk: warmup time (+~40 s per
+process, run cap 2400 s) and different FP32 reduction orders. Fallback: c9.
+
+## Candidate 11 — measured dense-attention interval layouts
+
+Hypothesis: the split/tile policy of the dense decode attention was chosen by
+reasoning, never measured. During warmup, on the ordinary stream, time up to
+six shape-only (tile, splits) layouts as CUDA graphs at the real capacity and
+prompt length; keep the official default unless another layout agrees with it
+(atol/rtol 0.02) and is at least 3% faster, rechecked after compilation. All
+layouts are the same dense attention over every valid key. 15 s bound.
+Pushed together with candidate 10: both only select among self-checked kernels.
+
+Result (candidates 10+11 together): commit `a161a1b`, run
+`00cce684-966b-4cb6-886b-be81a0cebc75` succeeded, ranked **925.547 tokens/s**
+(candidate 9: 925.996). Public TPOT 3.944/4.550/4.621 ms, unchanged within
+noise; the run grew by only about 40 s. Learned: none of the added GEMV/GEMM
+tiles or attention interval layouts beats what was already selected. Layout
+tuning of these kernels is exhausted; do not spend more runs on it.
+
+## Candidate 12 — index-only prefill savings (drafted)
+
+SwiGLU used one int64 divide and modulo per element; launch it on a
+(row, column-block) grid instead. Store fused Q token-major so Flash returns a
+token-major output and the transposed `.contiguous()` copy (67 MB per layer at
+8,192 tokens) becomes a no-op. No arithmetic changes.
+
+Result (candidate 12): commit `1cbd367`, run
+`a250b365-1e0e-4c84-9959-e13093227aa3` succeeded, ranked **932.036 tokens/s**,
+up 0.70%. Public TTFT 10.16/118.01/105.32 ms (from 10.75/122.74/114.71); TPOT
+3.939/4.529/4.623 ms. Throughput 241.7/494.5/2956.7 tokens/s. All gates passed.
+
+## Candidate 13 — measured launch widths for small decode kernels
+
+Earlier official deltas price a tiny graphed kernel at roughly 2.5-3.4 us
+(c3->c4: 72 launches for 0.244 ms; c2->c3: about 360 for 0.905 ms), so six
+small kernels in each of 36 layers cost about 0.7 ms of a 3.94 ms batch-one
+step. `kernels/tune.py` times `num_warps` options for residual-add RMSNorm,
+SwiGLU and decode Q/K RoPE once per shape on the ordinary stream (12 s bound)
+and freezes the choice before capture. Same kernel source; only the block
+width, hence the FP32 reduction tree, differs. Commit `e20537c`.
+
+Result (candidate 13): run `7d05b6a2-f477-4e9d-8ee4-127c3bb11200` succeeded,
+ranked **934.552 tokens/s** (+0.27%). Public TPOT 3.888/4.508/4.629 ms, TTFT
+10.55/117.59/109.24 ms, throughput 244.2/497.7/2938.7 tokens/s. Small gain.
+
+## Candidate 14 — lossless 12-bit storage for decode projections
+
+Hypothesis: decode is bound by reading 8.05 GB of BF16 weights per step, and
+layout tuning is exhausted, so read fewer bytes without changing any value.
+BF16 is sign(1)+exponent(8)+mantissa(7); trained weights use a narrow exponent
+band. `kernels/packed.py` stores one sign+mantissa byte per weight plus a 4-bit
+`exponent - base` code (per-matrix base, codes 1..15): 12 bits, 75.3% of the
+bytes. Weights outside the window (about 1e-4 of them: tiny values, outliers,
+denormals, -0.0) are +0.0 in the planes and kept exactly as BF16 in a dense
+per-row side table that the same kernel adds in FP32 before the one BF16
+rounding. This is a storage layout, not quantization: every weight is decoded
+to its exact BF16 bit pattern, and the products/FP32 accumulation are those of
+the existing plain kernels (GEMV in FP32 lanes; GEMM through the same BF16
+`tl.dot`). Prefill keeps the BF16 originals.
+
+Safety: `pack` reconstructs every weight in Torch and refuses the matrix unless
+all bits match; a row needing more than 16 side entries refuses the matrix.
+During warmup a packed layout is eligible only if one-hot inputs return the
+chosen BF16 columns bit for bit on the GPU (including exception columns), it
+passes the existing closeness probe, and it is at least 1.5% faster than the
+best alternative in cold-cache graph timing. Unpacked matrices fall back to the
+best plain layout. Verified locally: codec bit-exactness on CPU including edge
+values and chunked packing; all four kernel variants compile offline for
+`cuda:90` with Triton 3.1.0 (`agent` scratch harness, `triton.compile` with an
+explicit `GPUTarget`). Not verified locally: GPU execution and speed.
+Costs: about +6 GB resident, load-time packing, and up to 80 s of bounded
+projection tuning per process. Fallback: candidate 13 (`e20537c`).
+
+Result (candidate 14): commit `344ca6d`, run
+`273743f8-92e7-4f3d-8ecf-af9973befa53` succeeded, ranked **945.538 tokens/s**
+(+1.18%). Public TPOT 3.811/4.407/4.478 ms, TTFT 10.62/118.33/106.82 ms,
+throughput 247.9/501.4/3031.7. Reported peak memory rose only 0.58 GB, which is
+exactly the LM head's planes: only 1 of 145 matrices packed. A single exponent
+window per matrix evidently cannot cover output channels of different scale.
+The packed GEMV is therefore H100-verified bit-exact (one-hot gate) and faster
+for the LM head; the per-layer matrices never used it. An independent review
+found no correctness defect and one selection bug (fixed in candidate 15).
+
+Result (candidate 15): commit `5c96d33`, run
+`48076d07-5210-4460-96ad-43c0f1862dd8` succeeded but ranked **934.234** with
+TPOT 3.925/4.522/4.597 ms, i.e. candidate-13 level. Adding three word-load
+packed layouts ahead of `pgemv(16,256)` most plausibly pushed the LM head's
+winner past the per-shape deadline. Learned: keep the list short and put the
+proven layout first; stdout is hidden, so a long blind search is a liability.
+Offline LLIR shows load instructions per thread-iteration: plain 36, byte
+planes 100, word planes 19; whether request count matters on H100 is untested.
+
+## Candidate 16 — per-row exponent windows and word-load BF16 layouts
+
+Per-row `base` (one byte per output channel, chosen from that row's exponent
+histogram) so every matrix can pack; CPU test covers rows spanning 2^16 in
+scale. Also plain BF16 storage read as int64 words (`wgemv`/`wgemm`, four
+weights per request, no repacking) gated by the same one-hot bit-exactness
+check. Candidate list shortened and reordered. Commit `072d3e1`. Expected
+diagnostic: about +6 GB peak memory if all matrices pack.
+
+Result (candidate 16): run `5ea442f0-c3bb-4fe4-82a3-099b026ec0af` succeeded,
+ranked **930.189**; peak memory 20.87 GB, so per-row windows packed nearly all
+matrices. TPOT 3.936/4.531/4.637 ms: no gain, and candidate 14's gain absent.
+
+Reproducibility check: commit `538acc6` restored candidate 14's engine byte for
+byte; run `f6fbb941-e889-4690-9eb6-9f1951ccbc72` ranked **933.074** with TPOT
+3.934/4.524/4.607 ms (the original run: 945.538, 3.811/4.407/4.478) and the
+same TTFT. Identical code therefore varies by about 1.3% in score through
+decode alone. Learned: isolated kernel timings near their threshold select
+different layouts from run to run, one combination is 2-3% faster in the real
+graph, and the microbenchmark cannot tell which. Candidate 14's 945.5 was such
+a draw, not evidence that packing helps.
+
+## Candidate 17 — in-situ layout refinement
+
+After the decode graph is captured, `DecodeState.refine` swaps each projection
+shape's other validated layouts (top four by isolated time, cuBLAS included)
+into the real graph, recaptures, times 3x24 replays, and keeps a change only if
+the whole step is at least 0.5% faster; largest weight traffic first, 45 s
+bound, final graph recaptured before any measured sample. Every option already
+passed the operator and one-hot exactness checks, so only speed is decided.
+Built on candidate 16's kernels (per-row packed, word-load, plain, cuBLAS).
+The attention layout probe now uses random Q/K/V so its agreement check is
+meaningful. Fallback: candidate 13 (`e20537c`) behaviour.
+
+Result (candidate 17): run `6974f071-4e60-4512-8f6a-2b39924c3f66` succeeded,
+ranked **932.596**; TPOT 3.925/4.538/4.614 ms, peak memory 21.3 GB, run 12 min.
+In the captured decode step no packed or word-load projection layout beat the
+incumbent by 0.5%. Conclusions: (1) candidate 14's 945.5 was run/hardware
+variance in decode (about 1.3% of score), not a packing gain; (2) Triton's
+generated projection code is not byte-bound, so lossless packing does not pay
+here; (3) the real level since candidate 13 is about 933 +/- 5.
+
+## Candidate 18 — in-situ refinement of every frozen choice
+
+`kernels/tune.py` now keeps a registry of knobs (dense-attention interval
+layouts that agreed with the default on random Q/K/V, projection layouts,
+small-kernel launch widths). `DecodeState.refine` re-judges each against the
+captured step, largest expected effect first, 60 s bound. Isolated projection
+tuning shrinks to 14 s per shape and 70 s per process since it only needs to
+validate and rank.
+
+Result (candidate 18): run `38e35ca7-6279-4884-8f97-03ca3af5817e` was
+**canceled by the platform: "the run exceeded the 15-minute time limit"**. The
+live whole-run cap is 15 minutes, not the 2400 s in the challenge JSON. Nine
+fresh processes each paid weight packing, isolated tuning and 60 s refinement.
+Budget rule from now on: candidate 12 ran 434 s, candidate 13 509 s,
+candidate 17 721 s; keep runs under about 11 minutes.
+
+## Candidate 19 — lean in-situ refinement
+
+Removed lossless packing and word-load layouts from the engine (kept for
+reference in `agent/archive/packed_lossless_12bit.py`; they never beat the
+incumbent in the captured step). Projection candidates back to GEMM 64x128 and
+GEMV 8x512/16x256 within 8 s per shape, 30 s per process. Launch widths are no
+longer timed in isolation. Attention validates at most three alternative
+interval layouts (10 s). `refine` then re-judges every knob against the
+captured decode step within 20 s.
+
+Result (candidate 19): commit `baa5ae1`, run
+`62a91e71-e42f-4b96-9bdd-3d60f6e6a5b5` succeeded in 9.7 minutes, ranked
+**932.448**; TPOT 3.939/4.551/4.637 ms, TTFT 10.65/117.91/106.49 ms, peak
+memory 16.2 GB. Re-judging attention layouts, projection layouts and launch
+widths against the captured step changes nothing. Blind tuning of this design
+is exhausted at about 933; the leaderboard best remains the 945.538 draw.
+
+## Where the remaining time is (analysis, 2026-09-19)
+
+With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
+projection reads (8.05 GB per step, roughly 75% of nominal H100 bandwidth, and
+insensitive to layout per candidate 10) plus about 0.7 ms of small kernels.
+At 4x2048 and 16x576 dense attention adds about 0.6 ms for 1.2-1.4 GB of KV.
+Prefill is within about 10% of cuBLAS plus Flash. Incremental kernel work
+therefore plateaus near 950. Going far beyond needs fewer bytes per token or
+more tokens per read. N-gram speculation was analysed and rejected for now:
+at batch 16 the slowest row sets the pace while verification costs more, and
+at batch one with 32 outputs content-dependent acceptance threatens the 25%
+spread gate.
+
+## Local verification environment prepared at handoff
+
+Docker image `fasty-cpucheck:3.1.0` built successfully for Linux AMD64 on this
+Mac. Its source is `agent/local_cpu/Dockerfile`; it includes Python 3.11,
+PyTorch 2.5.1 CPU, Triton 3.1.0 and Transformers 4.51.3. It has no CUDA device.
+CPU interpreter tests and explicit-target offline H100 compilation are planned,
+not yet implemented or executed. Triton 3.1's interpreter has BF16 representation
+and conversion limitations; do not equate interpreter output with GPU parity.
+
+The continuation brief is `agent/continue.md`; the full Claude operating prompt
+is `agent/CLAUDE_SYSTEM_PROMPT.md`. The user's new target is an eligible official
+aggregate score of at least 2,000 tokens/s, not a public-case score.
 
 ## September 19 backend migration
 

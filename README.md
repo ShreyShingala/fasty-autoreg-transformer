@@ -3,12 +3,14 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-The latest measured engine passed the official H100 benchmark at **789.4
-tokens/s** (commit `a410d2c`), up from **528.6** at `0d92f17`. It uses a static
+The latest measured engine passed the official H100 benchmark at **873.0
+tokens/s** (commit `f565305`), up from **528.6** at `0d92f17`. It uses a static
 BF16 KV cache, CUDA graph decode, dense Triton attention, fused RMSNorm, packed projections,
 fused SwiGLU, fused residual additions, and fused decode Q/K norm, RoPE and cache writes.
-The next candidate selects BF16 projection kernels against cuBLAS during warmup;
-its result is pending. See
+It also selects BF16 projection kernels against cuBLAS during bounded warmup and
+captures prefill with native Flash grouped-query attention. The uncommitted next
+candidate extends Q/K fusion to prefill and avoids unused final-layer prompt outputs;
+it has not been measured on H100. See
 [experiment notes](agent/EXPERIMENTS.md) for measurements and validation commands.
 The original baseline remains available at commit `e35c206`.
 
