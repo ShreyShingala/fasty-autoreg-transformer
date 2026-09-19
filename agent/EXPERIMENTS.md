@@ -1703,3 +1703,22 @@ Session read-out / dispatch notes (2026-09-19 21:50 UTC):
   minimum that can be 20 seconds old. A suggested 20 ms mailbox timeout is NOT
   adopted: ordinary prefill itself takes over 100 ms. The forced-usable mailbox
   check did exercise ready(); the CPU smoke alone does not.
+
+Result (candidate 91, `c758faf`): **1144.3 - BEST** (normalized 1143.7), 692 s.
+Warp-width knobs for 17-64-row blocks, on top of the numpy views and a queue of
+three passes above batch 2. Note this tree HAS `SPEC_LOOKAHEAD_WIDE = 3`: the
+earlier suspicion that the third pass in flight was the c90 regression was
+wrong.
+Result (candidate 93, `44edf62`, refine budget 24 s + lookahead back to 2):
+**1103.3** (normalized 1111.5) in **833 s** - the longest run since the cap
+cancellations. The budget is the regression: warmup compile time is the binding
+constraint, and 8 s x 6 workloads bought nothing. Codex's follow-ups from that
+base: `9e15bd4` (mailbox read through a shared numpy view) 1130.9 / 1136.7
+normalized, 700 s; `5d61f22` (incremental draft sibling membership) canceled.
+
+## Candidate 95 - back to the candidate-91 knobs, keeping the newer host reads
+
+`seconds` 24 -> 16 and `SPEC_LOOKAHEAD_WIDE` 2 -> 3, i.e. exactly candidate
+91's tuning configuration, with Codex's shared-view mailbox read and the
+incremental sibling membership kept on top. Read-out: duration back to ~690 s
+and the score back to the 1140s.

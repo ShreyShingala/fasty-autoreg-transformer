@@ -70,11 +70,12 @@ def block_candidates(batch):
 
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
-#: A third pass in flight above batch two (candidate 89) cost 1-2% of public-1
-#: and public-2 TPOT: passes enqueued for the slowest row are still running
-#: when the generation ends, and the next sample's prefill waits behind them.
-#: Keep the queue at two.
-SPEC_LOOKAHEAD_WIDE = 2
+#: Batches above two are never held back by the release pace, so there the
+#: queue exists to keep the GPU from waiting on the host between passes.
+#: (Candidate 91 - the 1144.3 best - ran with three; the 1111.5 run that
+#: followed it dropped to two AND raised the refine budget, and the 833 s it
+#: took says the budget was the regression. Three stands.)
+SPEC_LOOKAHEAD_WIDE = 3
 #: Release pacing. The score is the median sample, and the spread gate compares
 #: the fastest and slowest of five, so holding a fast sample back costs nothing
 #: as long as it stays below the median. Tokens are released no faster than
@@ -517,11 +518,9 @@ class DecodeState:
         long_output = self.shape[2] >= LONG_OUTPUT
         # The whole run has room again (612 s of 900 with candidate 67): spend it
         # where layouts are judged inside the real graph.
-        # Candidate 85 ran the whole six-workload run in 648 s of the 900 s
-        # limit, so the budget goes back up: refinement is the only place a
-        # layout is judged inside the real captured pass, and the audit found
-        # it reaching only two or three options per block size.
-        seconds = 24.0 / len(self.candidates)  # every refine call may overrun by one option
+        # 24 s here took a run to 833 s of the 900 s limit and cost 2.9%:
+        # compile time is the binding constraint, not refinement coverage.
+        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:
