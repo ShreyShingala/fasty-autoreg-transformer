@@ -218,7 +218,7 @@ def decode_attention(query, key, value, position, scale):
 
 @triton.jit
 def _block_partials(
-    q_ptr, k_ptr, v_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr,
+    q_ptr, k_ptr, v_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr, out_ptr,
     TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
     DIM: tl.constexpr, CAPACITY: tl.constexpr, SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
@@ -276,10 +276,19 @@ def _block_partials(
         )
         accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
         maximum = next_maximum
-    slot = (group * SPLITS + split) * (TOKENS * GROUPS) + members
-    tl.store(partial_ptr + slot[:, None] * DIM + dims[None, :], accumulator, live[:, None])
-    tl.store(stats_ptr + slot * 2, maximum, live)
-    tl.store(stats_ptr + slot * 2 + 1, denominator, live)
+    if SPLITS == 1:
+        # One interval covers the whole prefix: normalize and write the final
+        # token-major output here; no partial storage, no merge launch.
+        # (Single-pass path contributed by john-jpet's fork.)
+        tl.store(
+            out_ptr + q_offset[:, None] + dims[None, :],
+            accumulator / denominator[:, None], live[:, None],
+        )
+    else:
+        slot = (group * SPLITS + split) * (TOKENS * GROUPS) + members
+        tl.store(partial_ptr + slot[:, None] * DIM + dims[None, :], accumulator, live[:, None])
+        tl.store(stats_ptr + slot * 2, maximum, live)
+        tl.store(stats_ptr + slot * 2 + 1, denominator, live)
 
 
 @triton.jit
@@ -331,7 +340,7 @@ def block_attention(query, key, value, position, scale, chain):
         # the alternatives (same dense attention, different interval tiling).
         default = _default_config(batch, kv_heads, capacity)
         options = [default]
-        for block_n, splits in ((128, default[1] // 2), (64, default[1] * 2), (32, default[1] * 2), (128, default[1])):
+        for block_n, splits in ((64, 1), (128, 1), (128, default[1] // 2), (64, default[1] * 2), (128, default[1])):
             option = (block_n, max(1, min(32, splits, triton.cdiv(capacity, block_n))), 4)
             if option not in options:
                 options.append(option)
@@ -343,19 +352,23 @@ def block_attention(query, key, value, position, scale, chain):
             )
     block_n, splits, warps = _BLOCK_LAYOUTS[shape]
     chunk = triton.cdiv(capacity, splits)
-    partial = torch.empty((batch * kv_heads, splits, members, dim), device=query.device, dtype=torch.float32)
-    stats = torch.empty((batch * kv_heads, splits, members, 2), device=query.device, dtype=torch.float32)
     out = torch.empty((batch, tokens, query_heads, dim), device=query.device, dtype=query.dtype)
+    if splits == 1:
+        partial = stats = out  # unused pointers in that specialization
+    else:
+        partial = torch.empty((batch * kv_heads, splits, members, dim), device=query.device, dtype=torch.float32)
+        stats = torch.empty((batch * kv_heads, splits, members, 2), device=query.device, dtype=torch.float32)
     _block_partials[(batch * kv_heads, splits)](
-        query, key, value, position, chain, partial, stats,
+        query, key, value, position, chain, partial, stats, out,
         TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
         DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk, SCALE=scale,
         BLOCK_M=max(16, triton.next_power_of_2(members)), BLOCK_N=block_n,
         num_warps=warps, num_stages=2,
     )
-    _block_merge[(batch * tokens * query_heads,)](
-        partial, stats, out,
-        TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
-        DIM=dim, SPLITS=splits, BLOCK_S=triton.next_power_of_2(splits), num_warps=4,
-    )
+    if splits > 1:
+        _block_merge[(batch * tokens * query_heads,)](
+            partial, stats, out,
+            TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
+            DIM=dim, SPLITS=splits, BLOCK_S=triton.next_power_of_2(splits), num_warps=4,
+        )
     return out

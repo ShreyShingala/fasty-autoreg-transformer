@@ -836,6 +836,18 @@ of at most 8 addends. Removes up to four launches per layer (144 per pass)
 wherever the split skinny GEMM is the selected layout; `refine` now judges the
 cheaper GEMM in the real graph. Kernels compile for `cuda:90` with SPLITS 1/2/8.
 
+## Candidate 43 — two-context successor table; single-pass block attention option
+
+(a) `successor_table` sums the model's log-probabilities from two contexts (the
+bare token, and the token after a newline): top-1 15.3% / top-8 38.9% against
+12.9% / 34.7%; offline -2.0 to -2.7% passes at 4-16 tokens per row on 276
+samples (about +4 s of load). (b) From teammate john-jpet's fork of this
+engine (team "dryfter", 1072.5 at 15:14 UTC, forked at candidate 36): when one
+interval covers the prefix, `_block_partials` normalizes and writes the final
+output itself (no partials, no merge launch); offered to `refine` as layouts
+(64, 1) and (128, 1). Their other change, a gate/up GEMM with a SwiGLU
+epilogue, overlaps candidate 42 for decode; its prefill variant is not ported.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

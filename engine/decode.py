@@ -353,7 +353,7 @@ class DecodeState:
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
         self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
 
-    def refine(self, seconds=16.0):
+    def refine(self, seconds=20.0):
         """Keep a projection layout for the verify block only if the real pass gets faster.
 
         Isolated timings pick the starting layouts; here each validated
