@@ -6,8 +6,8 @@ from kernels import spec
 
 rng = random.Random(1); cases = 0; branches = 0
 for case in range(int(sys.argv[1]) if len(sys.argv) > 1 else 60):
-    TOKENS, D = rng.choice([(16, (5, 8, 13, 14)), (8, (2, 4, 6, 7)), (5, (2, 3, 4, 4)), (4, (1, 2, 3, 3)), (2, (1, 1, 1, 1))])
-    batch, vocab, SIZE, TOP = rng.choice([1, 3, 4]), rng.choice([4, 9, 40]), rng.choice([40, 97]), 8
+    TOKENS, D = rng.choice([(16, (5, 8, 13, 14)), (8, (2, 4, 6, 7)), (5, (2, 3, 4, 4)), (4, (1, 2, 3, 3)), (3, (1, 2, 2, 2)), (2, (1, 1, 1, 1))])
+    batch, vocab, SIZE, TOP = rng.choice([1, 3, 4, 17, 33] if TOKENS <= 3 else [1, 3, 4]), rng.choice([4, 9, 40]), rng.choice([40, 97]), 8
     top = torch.tensor([[rng.randrange(vocab) for _ in range(TOP)] for _ in range(vocab)])
     history = torch.zeros(batch, SIZE, dtype=torch.int64); position = torch.zeros(batch, dtype=torch.int64)
     for b in range(batch):

@@ -5,6 +5,7 @@ decode attention reads the valid prefix using a GPU position. Weights and KV
 storage remain BF16; fused pointwise operations preserve native cast boundaries.
 """
 
+import math
 import time
 
 import torch
@@ -39,6 +40,22 @@ EXPECTED_PASSES = {
 }
 
 
+#: Largest batch that is offered speculation. One pass moves ~8 GB of weights
+#: whatever its row count and adds ~8 GFLOP per row, so rows are nearly free
+#: until compute catches up with the weight traffic (100-250 rows on an H100;
+#: public-2 paid ~5% for going from 32 to 64 rows). Two tokens per row is the
+#: smallest block: past 64 x 2 = 128 rows the pass is compute-bound, a drafted
+#: row costs what a decoded one does, and the slowest of that many rows saves
+#: under 10% of the passes (BATCH_PASSES) - less than the wider pass costs.
+MAX_SPECULATIVE_BATCH = 64
+#: Above this batch the plain decode step is timed too and may win (below it
+#: speculation always won on the platform, so nothing changes there).
+PLAIN_DECODE_BATCH = 16
+#: A verify block must beat plain decode by this factor: its per-sample time
+#: depends on the text, plain decode's does not.
+PLAIN_MARGIN = 0.97
+
+
 def block_candidates(batch):
     """Block sizes worth measuring for this batch.
 
@@ -46,15 +63,46 @@ def block_candidates(batch):
     within 64 rows (public-2 ran 2% faster with four tokens per row through 64
     cuBLAS rows than with two, while the hidden aggregate fell when that was
     forced for every short prompt: so it is measured per workload instead).
+    Batches 17-64: ONE size, the largest of three and two tokens per row that
+    keeps the block within 64 rows (three up to batch 21), else two (up to 128
+    rows). With that many rows the unluckiest one sets the pass count
+    (BATCH_PASSES: three tokens save 2-6% of the passes of two, about what 17-32
+    more rows cost), so wider blocks buy nothing, and every size measured is
+    ~5 s of warmup in a run with a whole-run limit. Plain decode is measured
+    against it and may win (``choose_block``).
     """
-    if batch > 16:
+    if batch > MAX_SPECULATIVE_BATCH:
         return []
+    if batch > PLAIN_DECODE_BATCH:
+        return [3 if 3 * batch <= 64 else 2]
     sizes = []
     for rows in ((16, 32) if batch <= 8 else (32, 64)):
         fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
         if max(fitting) not in sizes:
             sizes.append(max(fitting))
     return sizes if batch > 1 else sizes[:1]
+
+
+#: Offline passes per token when a generation lasts until the SLOWEST of its
+#: rows is done (2000 resampled batches of the model's greedy text): the value
+#: at batch 16 and its growth per doubling of the batch (8 -> 16 measured),
+#: short / long outputs. Unshrunk: the batch-one shrink of EXPECTED_PASSES
+#: includes that case's release pacing, which many rows do not reach.
+BATCH_PASSES = {
+    2: ((0.943, 0.017), (0.874, 0.012)),
+    3: ((0.884, 0.021), (0.850, 0.015)),
+}
+
+
+def expected_passes(size, batch, output_length):
+    """Verify passes per output token for ``batch`` > 16 rows, comparable with plain decode's 1.0.
+
+    Every step yields one token of every row, so a generation takes as many
+    passes as its unluckiest row, and more rows make that row unluckier. Pure
+    arithmetic on the shape: the same value in every process of a workload.
+    """
+    base, growth = BATCH_PASSES[size][output_length >= LONG_OUTPUT]
+    return min(1.0, base + growth * math.log2(batch / 16))
 
 
 #: Verify passes queued behind the GPU.
@@ -226,9 +274,10 @@ class DecodeState:
                 model.lm_head.weight, layer.self_attn.qkv_weight,
                 layer.self_attn.o_proj.weight,
             ):
-                if self.speculative:
+                if self.speculative and batch <= PLAIN_DECODE_BATCH:
                     # One-token rows then run once per generation (the prefill
                     # tail): the budget belongs to the verify-block shapes.
+                    # (Above that batch plain decode may still win: tune it.)
                     keep_native(batch, projection)
                 else:
                     linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
@@ -272,7 +321,9 @@ class DecodeState:
         self.capture_prefill()
         if self.speculative:
             self.choose_block(model, weight)
-            self.refine()
+            if self.speculative:
+                # Wide blocks run cuBLAS projections: few knobs, shorter search.
+                self.refine(10.0 if batch <= PLAIN_DECODE_BATCH else 4.0)
         elif output_length > 1:
             self.capture()
 
@@ -382,11 +433,25 @@ class DecodeState:
         much more depends on the batch and the context length (attention work
         scales with the block). Score = measured pass time x expected passes
         per token. Shape-only: decided once at warmup, before any sample.
+        Above PLAIN_DECODE_BATCH rows the one-token step is measured as well
+        (one pass per token) and kept unless a block beats it by PLAIN_MARGIN.
         """
-        long_output = self.shape[2] >= LONG_OUTPUT
+        batch, _, output_length = self.shape
+        long_output = output_length >= LONG_OUTPUT
         best = None
+        plain = self.time_plain() if batch > PLAIN_DECODE_BATCH else None
         for size in (*self.candidates, None):
             if size is None:
+                if plain is not None:
+                    # Timed again after the blocks, faster reading kept: clock
+                    # ramp-up must not make the first thing measured look slow.
+                    plain = min(plain, self.time_plain(capture=False))
+                if plain is not None and best[0] >= PLAIN_MARGIN * plain:
+                    # Plain decode it is: decided once, before any sample. The
+                    # captured prefill keeps writing the (now unread) history.
+                    self.speculative, self.spec_graph = False, None
+                    break
+                self.graph = None  # the plain step's graph and its memory pool
                 size = best[1]  # settle on the winner (a no-op if it was measured last)
                 if size == self.block_size:
                     break
@@ -394,9 +459,40 @@ class DecodeState:
                 self.block_size, self.drafts_by_match = size, DRAFTS_BY_MATCH[size]
                 self.prepare_speculation(model, weight)
             self.capture_speculation()
-            cost = self.pass_seconds * EXPECTED_PASSES[size][long_output]
+            if plain is None:
+                cost = self.pass_seconds * EXPECTED_PASSES[size][long_output]
+            else:
+                # Against plain decode the absolute pass count matters, and
+                # with many rows the slowest one sets it.
+                cost = self.pass_seconds * expected_passes(size, batch, output_length)
+                print(
+                    f"verify block warmup: batch={batch} tokens={size} pass_ms={self.pass_seconds * 1e3:.3f} "
+                    f"per_token_ms={cost * 1e3:.3f} plain_ms={plain * 1e3:.3f}", flush=True,
+                )
             if best is None or cost < best[0]:
                 best = (cost, size)
+        if plain is not None:
+            print(
+                f"verify block warmup: batch={batch} speculative={self.speculative} tokens={self.block_size} "
+                f"plain_ms={plain * 1e3:.3f} best_per_token_ms={best[0] * 1e3:.3f}", flush=True,
+            )
+
+    def time_plain(self, capture=True):
+        """Capture the one-token decode step; median seconds of one replay."""
+        if capture:
+            self.capture()
+        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        times = []
+        for _ in range(12):
+            self.position.fill_(self.shape[1])
+            start.record()
+            self.graph.replay()
+            end.record()
+            end.synchronize()
+            times.append(start.elapsed_time(end))
+        self.position.fill_(self.shape[1])
+        self.token_ids.zero_()
+        return sorted(times)[len(times) // 2] / 1000.0
 
     def refine(self, seconds=10.0):
         """Keep a projection layout for the verify block only if the real pass gets faster.

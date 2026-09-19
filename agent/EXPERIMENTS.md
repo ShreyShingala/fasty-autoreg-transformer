@@ -1066,3 +1066,17 @@ prefill clears it (no state crosses generations). Drafts only: verification is
 untouched. Checks: check_tree emulation with hints = sequential greedy in 400
 cases (1506 hints used); Triton interpreter == emulation on 80 cases incl. the
 stale output; cuda:90 compile; whole-engine smoke 0 mismatches; unit tests.
+
+## Candidate 56 — speculation for batches 17-64, measured against plain decode (held)
+
+Built by a subagent in a worktree (`a057bcd`), merged here. One block size per
+batch (3 tokens while 3 x batch <= 64, else 2, up to 128 cuBLAS rows); at
+warmup the plain one-token step is timed before and after the verify block and
+speculation is kept only if pass_ms x expected_passes(T, batch, output) beats
+0.97 x plain (`BATCH_PASSES`: slowest-row pass counts from the lab). Batches
+1-16 and 65+ behave as before; for batch 17-32 the one-token projections are
+still tuned (plain decode may win). Refine budget 4 s there. Local checks:
+smoke test on 17x16x8 / 33x12x6 / 64x8x5 with speculation forced, plain forced
+and timed (0 mismatches, 32 KV relocations), interpreter cases for T=3 and
+17/33-row attention, 56 cuda:90 compiles, unit tests. GPU unknowns: the real
+pass/plain ratio (gain 0-8% on such shapes), +8-15 s warmup per such workload.
