@@ -1791,3 +1791,22 @@ importing torch/triton) and falls back silently if it cannot be created. If the
 six workloads share a container this is worth 100-200 s per run; if each gets a
 fresh one it is a no-op. Either way nothing about the engine's arithmetic or
 layout choices changes. Read-out: run duration.
+
+Result (candidate 98, warmup cut back): commit `bec0e9f` succeeded in **692 s**
+- the cap risk is gone - but scored **1111.9** (normalized 1109.3). Cutting the
+tuning budgets costs layout quality: public-0 TPOT 3.165 ms against candidate
+91's 3.021. Note candidate 91 ran its 28 s / 16 s budgets in 692 s too, so the
+budgets were never what put runs at 915-919 s; `DEEP_STAGES = 3` and whatever
+`5d61f22` added were.
+
+## Candidate 100 - reset to the 1144.3 tree, plus the named Triton cache only
+
+Normalized scores of the last five runs: 1143.7 (c91), 1136.7, 1123.6, 1109.3,
+each a small edit on the one before, each a little worse, none individually
+outside the +/-1.3% noise. That is a drift, not a sequence of measurements. So
+`engine/` is reset to exactly candidate 91's tree (`c758faf`, the 1144.3 run)
+and the ONLY change on top is `TRITON_CACHE_DIR` - a warmup economy that cannot
+touch arithmetic or layout choice. Everything since candidate 91 (the mailbox
+numpy view, the incremental sibling membership, the budget trims, the pruning,
+the pipeline depth) is set aside and comes back one per run, each measured
+against this base.

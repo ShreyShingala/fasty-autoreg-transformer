@@ -170,20 +170,6 @@ def _tma_descriptor(weight, block_n, block_k):
         return None
 
 
-#: Software-pipeline depth of the tile GEMMs: buffers of each tile held in
-#: shared memory while the next is fetched. A compile with JIT-accurate
-#: alignment attributes shows these kernels DO emit `cp.async` (27 groups at 2,
-#: 39 at 3, 51 at 4) at 20 KB of the 227 KB per SM per stage - the earlier
-#: "num_stages is inert here" reading came from an offline harness that never
-#: passed `divisible_by_16`, so the compiler assumed unaligned pointers and
-#: refused to pipeline or vectorise anything. Deeper trades occupancy for
-#: latency hiding AND costs ptxas time: candidate 96 tried three and the run
-#: was cancelled at 919 s of the 900 s limit (the one before it, 915 s).
-#: Compile time is the binding constraint, so this stays at two until warmup
-#: has room to spare.
-DEEP_STAGES = 2
-
-
 def _block_m(m):
     """Input-row lanes of a tile: tl.dot needs at least 16, and whole powers of two."""
     return 16 if m <= 16 else 32 if m <= 32 else 64
@@ -215,7 +201,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
             BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, TILES=4,
             EVEN_M=m == block_m, EVEN_N=n % (4 * block_n) == 0, EVEN_K=splits * chunk == k,
             WIDE=max(n * k, splits * m * n) + 8 * block_n * max(k, m) >= 2 ** 31,
-            num_warps=warps, num_stages=DEEP_STAGES,
+            num_warps=warps, num_stages=2,
         )
     elif kind == "tmah":
         # "trans" orientation, four TMA weight tiles per program sharing each x-tile load.
@@ -315,7 +301,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
                 x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
                 BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
                 EVEN_M=m == block_m, EVEN_N=n % block_n == 0, EVEN_K=splits * chunk == k, WIDE=wide,
-                num_warps=warps, num_stages=DEEP_STAGES,
+                num_warps=warps, num_stages=2,
             )
     if splits > 1 and split_ok:
         # The consumer kernel sums and rounds the partials itself.
@@ -358,7 +344,7 @@ MAX_ROWS = 32
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 22.0
+_PROCESS_SECONDS = 28.0
 _SHAPE_SECONDS = 6.0
 
 
@@ -473,23 +459,14 @@ def _choose(x, weight, split_ok=False):
     best_ms, best = native_ms, None
     validated = [(native_ms, None)]
     _VALIDATED[(x.device, m, n, k)] = validated
-    timed = {}
     for config in configs:
         if time.monotonic() >= shape_deadline:
             break
-        # A deeper-pipeline variant of a kind that already lost to cuBLAS at
-        # this shape cannot win it back: skip its compile. Warmup compile time
-        # is the binding constraint on the whole run (six workloads share the
-        # 900 s limit), so a candidate that cannot win is pure cost.
-        base = config[0][:-1] if config[0].endswith("3") else None
-        if base is not None and timed.get(base, 0.0) > native_ms:
-            continue
         # Reject a kernel that fails an operator sanity check. Full-model
         # correctness still comes from the platform's own-prefix replay.
         if not _agrees(probe, weight, config, reference):
             continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config, split_ok), flush)
-        timed[config[0]] = elapsed
         validated.append((elapsed, config))
         if elapsed < best_ms * 0.985:
             best_ms, best = elapsed, config

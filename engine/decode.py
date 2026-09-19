@@ -70,11 +70,9 @@ def block_candidates(batch):
 
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
-#: Batches above two are never held back by the release pace, so there the
-#: queue exists to keep the GPU from waiting on the host between passes.
-#: (Candidate 91 - the 1144.3 best - ran with three; the 1111.5 run that
-#: followed it dropped to two AND raised the refine budget, and the 833 s it
-#: took says the budget was the regression. Three stands.)
+#: Batches above two are never held back by the release pace (offline: the
+#: floor binds only at batch 1-2), so there the queue exists purely to keep the
+#: GPU from waiting on the host between passes: one more in flight.
 SPEC_LOOKAHEAD_WIDE = 3
 #: Release pacing. The score is the median sample, and the spread gate compares
 #: the fastest and slowest of five, so holding a fast sample back costs nothing
@@ -120,9 +118,6 @@ class Mailbox:
         except RuntimeError:
             self.flags = torch.zeros(slots, dtype=torch.int64)
             self.usable = False
-        # Keep a shared view: polling a stamp must not construct a Torch
-        # scalar and dispatch item() on every spin of the host release loop.
-        self.flag_values = self.flags.numpy()
         self.stamps = torch.arange(1, slots + 1, dtype=torch.int64, device=device)
         self.base = 0
 
@@ -137,7 +132,7 @@ class Mailbox:
             self.flags[slot:slot + 1].copy_(self.stamps[slot:slot + 1], non_blocking=True)
 
     def ready(self, slot):
-        return self.usable and int(self.flag_values[slot]) == self.base + slot + 1
+        return self.usable and int(self.flags[slot]) == self.base + slot + 1
 
     def wait(self, slot, event, window=0.5):
         if self.usable:
@@ -518,9 +513,7 @@ class DecodeState:
         long_output = self.shape[2] >= LONG_OUTPUT
         # The whole run has room again (612 s of 900 with candidate 67): spend it
         # where layouts are judged inside the real graph.
-        # 24 s here took a run to 833 s of the 900 s limit and cost 2.9%:
-        # compile time is the binding constraint, not refinement coverage.
-        seconds = 12.0 / len(self.candidates)  # every refine call may overrun by one option
+        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:
