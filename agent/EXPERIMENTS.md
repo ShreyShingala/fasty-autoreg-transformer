@@ -1083,3 +1083,8 @@ spread (gc.freeze after warmup, no collections inside a generation).
 Codex review insight recorded: at batch 1 the median sample sits on the pacing
 floor (0.70 x pass time), so pass-TIME cuts move the score 1:1 there while
 fewer PASSES barely do; acceptance work pays at batch >= 4.
+
+Result (candidate 53): commit `6334ff5` succeeded, **1097.7** - new best, #1;
+public 306.1 / 536.0 / 3240.8; whole run 817 s (c48: 710 s, c52: canceled at
+917 s). Keep. The GEMM tiles + inheritance cost ~100 s of run time for ~+0.2%
+(within noise of c48) - candidate 54's budget trims must bring the time down.
