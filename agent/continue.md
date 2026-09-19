@@ -1,12 +1,16 @@
 # Continue — Dryft Qwen3 engine
 
-## State (2026-09-19, ~13:55 UTC)
+## State (2026-09-19, ~14:40 UTC)
 
-**Leaderboard #1: 1042.440 tokens/s** (commit `8adb604`, run `74855daf`, candidate
-25); Segfault 1013.0. The user's next target is 1200. Queued/unread at this
-moment: candidate 26 (`607e1f5`, longer chains) and candidate 27 (`80ab1ef`,
-tree drafts). Read `GET /api/v1/runs` first. Runs take 8-10 minutes and queue;
-do not wait idle for them — build the next candidate meanwhile.
+**Leaderboard #1: 1065.476 tokens/s** (commit `8a7b9f5`, candidate 29); Segfault
+1013.0. User target: 1200. The loop is run as the `autoresearch` skill
+(`.claude/skills/autoresearch`, also installed in `~/.claude/skills`); the log is
+`agent/results.tsv` (rebuild with `python3 agent/tools/make_results_tsv.py`).
+Queued on the platform at this moment, in order: c32 `ff9307f` (blocks within 16
+rows), c33 `f5adf3b` (verify-graph tile refinement), c34 `622d4fd` (pace floor
+0.70), c35 `f3e6c80` (chain depth from match length), c36 `b0e2d76` (warmup never
+sets the pace). Watch with `agent/tools/watch_run.py <sha>`. A stash holds the
+untried cuBLASLt trial (`git stash list`).
 
 ## What produced the jump from 933
 
@@ -17,7 +21,10 @@ model-derived successor table; one graphed verify pass per block; per-row
 positions; rows never pass their last requested token; tokens released no
 faster than `PACE` x pass time to bound the 25% spread gate.
 c20 948 (batch 1) -> c22 985 (batched) -> c23 1003 (fused bookkeeping) ->
-c25 1042 (1-token matches).
+c25 1042 (1-token matches) -> c27 1051 (tree drafts) -> c28 1061 (32-row GEMM)
+-> c29 1065 (adaptive pacing). Losers: c26 long chains / 24-row cuBLAS blocks,
+c30 32-row blocks at batch 2. Dead offline: token recycling, model-view drafts,
+second-level alternatives, lag-based row dealing, frequency votes.
 
 ## Tools that now exist
 
