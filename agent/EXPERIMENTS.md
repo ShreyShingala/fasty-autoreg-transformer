@@ -765,6 +765,15 @@ and win at short context.
 16-row budget otherwise; batches 1-2 stay at 16 rows; batches up to 16 always
 get at least one draft. Uses candidate 35's match-length maps.
 
+Result (candidate 33): commit `f5adf3b`, run `dcbaa4d6` succeeded, ranked
+**1062.524** (candidate 32's shapes scored 1051.7 without it). public-0 306.8
+(TPOT 3.023, best so far), public-1 518.1, public-2 3110.1; run 9.9 minutes.
+Verify-graph refinement of projection tiles keeps.
+
+## Candidate 38 — pace floor by output length
+
+0.60 of a pass for outputs of 96 tokens or more, 0.70 otherwise.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

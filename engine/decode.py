@@ -57,6 +57,10 @@ SPEC_LOOKAHEAD = 2
 #: (276 samples, six corpora): five unpaced batch-one samples break the 25%
 #: spread gate 74-96% of the time; a 0.70 floor never did, 0.65 did 3.5%.
 PACE_FLOOR = 0.70
+#: Long generations average their acceptance out: offline, 128-token outputs
+#: never broke the gate at 0.60 (0.65 already failed 3.5% of 32-token runs).
+PACE_FLOOR_LONG = 0.60
+LONG_OUTPUT = 96
 PACE_MEDIAN = 0.88
 
 
@@ -342,7 +346,7 @@ class DecodeState:
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
-        self.pace_seconds = PACE_FLOOR * self.pass_seconds
+        self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
 
     def refine(self, seconds=12.0):
         """Keep a projection layout for the verify block only if the real pass gets faster.
@@ -523,7 +527,7 @@ class DecodeState:
                 self.natural.append((self.finished - self.started) / (self.shape[2] - 1))
             self.generations += 1
             self.tokens, self.passes_enqueued, self.passes_read, self.finished = [], 0, 0, None
-            self.pace_seconds = PACE_FLOOR * self.pass_seconds
+            self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
             if self.natural:
                 ranked = sorted(self.natural)
                 # Lower median: one slow early generation must not hold the rest back.
