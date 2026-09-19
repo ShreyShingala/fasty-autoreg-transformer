@@ -39,11 +39,26 @@ is an extrapolation, not a reading.
   3 waves, 4-5 on `trans`. Nothing has attacked it.
 - Split counts were never tuned - `_choose` searches kind and block_n only.
 
-## Next, in order
+## Correction: the "block attention on 8 SMs" item is not a free win
 
-1. **Block attention runs on 8 of 132 SMs at batch 1** (`SPLITS == 1` after
-   refine). 350 us against a 33 us byte floor; 100-200 us recoverable. Biggest
-   single non-GEMM item -> dryfter, it is architectural.
+The inventory inferred `SPLITS == 1` at batch 1 from a launch census and
+called it an oversight. It is not an oversight, it is a measurement:
+`_default_config(1, 8, 512)` already returns `splits = 16` (grid 8 x 16 = 128
+CTAs, which fills the machine), and the splits-1 layouts are merely *options*
+that `refine` has to beat the default by a full 1% to select. If refine really
+does settle on one, the merge launch plus its FP32 partials genuinely cost
+more than the parallelism buys at that shape - and that is worth understanding
+before changing anything. The smoke run's own launch counters
+(`_block_partials` 1184 against `_block_merge` 96) do not settle it either
+way, because the tuning probes inflate the partials count.
+
+**Do not ship an "add a bigger splits option" edit on this premise.** The
+option list already reaches `min(32, cdiv(256, batch*kv_heads))`. The real
+question is why a 1-CTA-per-KV-head layout wins a timing when a single CTA has
+to stream 262 KB of prefix, and answering it needs the per-layer attention time
+from the platform, not more arithmetic.
+
+## Next, in order
 2. `lm_head` wave quantization (3 deep) - persistent/stream-K decomposition.
 3. Lead-in replay before the timed group (`decode.py:469-487`): the host's
    first `cudaGraphLaunch` gap sits inside the timed interval, biasing
