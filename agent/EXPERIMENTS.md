@@ -540,6 +540,22 @@ the unconstrained level is about 1.18 tokens per 4.24 ms pass, and candidate
 21's median-on-the-floor was a favourable prompt draw. Draft acceptance, not
 the machinery, now limits speculation.
 
+Rerun of candidate 22's engine: commit `1e46d6f`, run
+`d78f2972-bbcf-4e7b-859e-583559385f1a` succeeded, ranked **984.931** (new
+best, +3.9% over candidate 20/21). public-0 253.2 tokens/s (TPOT 3.736,
+p10/p50/p90 114.0/126.4/128.5), public-1 507.0 (TPOT 4.358), public-2 2990.0.
+So the earlier incorrect_output was a rare event in the plain batch-16 path
+(1 failure in 23 runs of that path), and the hidden set clearly contains small
+batches that benefit from batched speculation.
+
+## Candidate 23 — fused speculation bookkeeping
+
+`kernels/spec.py`: `propose` and `settle` as one Triton program per row each,
+replacing about sixty tiny PyTorch launches per verify pass (pass 4.24 ms vs
+3.94 ms plain). The tensor versions in `speculate.py` remain the reference;
+a line-by-line emulation of the kernels equals them in 400 random cases, and
+both compile for `cuda:90`. Expected: about 0.15 ms per pass.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

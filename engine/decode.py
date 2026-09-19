@@ -15,7 +15,7 @@ from kernels.linear import linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
-from speculate import accept, advance, propose
+from kernels import spec
 
 def block_tokens(batch):
     """Tokens per row in a verify block, from the batch size alone.
@@ -259,22 +259,16 @@ class DecodeState:
 
     def speculate(self):
         """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
-        place = self.row_position[:, None]
-        drafts = propose(self.history, self.row_position, self.block_size - 1, self.history_index, self.model.successor)
-        tokens = torch.cat((self.history.gather(1, place), drafts), dim=1)
-        positions = place + self.block[None, :]
+        tokens = spec.propose(self.history, self.row_position, self.block_size - 1, self.model.successor)
+        positions = self.row_position[:, None] + self.block[None, :]
         rope = (self.cos[0][positions], self.sin[0][positions])
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )
         greedy = logits.argmax(dim=-1)
-        gained, moved = advance(self.row_position, accept(tokens, greedy) + 1, self.limit)
-        # greedy[b, i] follows tokens[b, :i + 1]; only the first ``gained`` are
-        # real, and the next pass overwrites the rest before anything reads them.
-        self.history.scatter_(1, positions + 1, greedy)
-        self.result[:, :1].copy_(gained[:, None])
-        self.result[:, 1:].copy_(greedy)
-        self.row_position.copy_(moved)
+        # Keep the drafts the model itself chose, never past the last requested
+        # token; record greedy tokens in the history; move each row.
+        spec.settle(tokens, greedy, self.row_position, self.limit, self.history, self.result)
 
     def capture_speculation(self):
         current = torch.cuda.current_stream(self.device)
