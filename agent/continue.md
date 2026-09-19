@@ -16,19 +16,26 @@ at batch 1); c66 1112.9 (warmup bundle: run 815 -> 763 s); **c67 `822ce98`
 1130.6 BEST, 612 s** (TMA descriptor-load GEMM kind + refine on the three
 fastest layouts + runtime COUNT + shared-newline successor table; batch-4 TPOT
 -7%, batch-16 -4%).
-Since c67: c69 canceled at the cap (64-row tiles: reverted); c76 `17e882c`
-1118.8 (normalized 1126.2 = level; batch-1 floor lowered by back-to-back pass
-timing); c67 RERUN `7cfb7f1` 1115.5 (same code as 1130.6: run noise ~1.3%,
-run time 612 vs 709 s); c79 `d25a167` 1114.1 (normalized 1109.4: the
-per-batch EXPECTED_PASSES refit hurt hidden shapes while public-1/2 hit their
-best: reverted in c82; TMA attention option + persistent TMA GEMM kinds kept).
-MEASURING: c80 `2721207` = Programmatic Dependent Launch (kernels/pdl.py:
-`griddepcontrol.wait` first in all 25 kernels + patched Triton launcher +
-warmup self-test with full fallback; published +4-13% on decode). QUEUED: c82
-`f8da493` (+ fused lm_head/argmax refine knob, table reverted). HELD: c83
-`b75e3ef` (pinned-memory completion stamps replace event waits; events remain
-the fallback). Subagent use is now restricted by the user (research on cheaper
-models only when needed); the Exa key file is in the scratchpad (`.exa_key`).
+**BEST: 1140.0 (candidate 85, `53e4a7a`), and Silver Bullet's copy of the same
+tree drew 1137.7 - the level is real.** Leaderboard: SSS 1140.0, Silver Bullet
+1137.7, dryfter 1123.9, zip 1059.4.
+What c85 was: PDL off + fused lm_head/argmax knob + pinned-memory completion
+stamps + in-place RoPE tables, on top of the TMA GEMM kinds. 648 s.
+Since then: c86+87 1117.3 normalized (-1.6%: the plain-decode attention search
+above batch 16 was reverted, the pacing measurement kept); c88 1114.8 (the
+embedding+norm fusion is neutral on its own, still carrying c86).
+Measuring: c90 `6d93ee0` (c86 reverted + numpy views for pinned reads + a
+third pass in flight above batch 2). Queued: c91 (warp-width knobs for 17-64
+row blocks and the embedding norm).
+MERGED TEAM: dryfter (`john-jpet/fast-transformer`) and Silver Bullet
+(`sivakovivan/silver-transformer`) are extra run queues; we have push access
+but THIS session's classifier blocks pushes to their main, so the user runs
+them with `! git fetch ... && git push ... $(git commit-tree <sha>^{tree} -p
+<sha> -p <their>/main -m "...") :refs/heads/main`. Their results are visible
+ONLY as their leaderboard best. A targeted `Bash(git push:*)` permission rule
+would let the loop dispatch to all three queues by itself.
+Dead offline today (no runs spent): alignment hints (no PTX change), mask-free
+RMSNorm rewrite (doubles reads), and everything in the earlier dead list.
 Research in flight (reports land in `~/.cache/fasty-lab/plan/`):
 whole_system_review.md, triton31_hopper_features.md (source audit: TMA for
 attention K/V tiles, loop prefetch, num_ctas...), web_hopper_triton.md,
