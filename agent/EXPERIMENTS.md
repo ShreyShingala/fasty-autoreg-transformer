@@ -1391,3 +1391,10 @@ floor (c71) + refine budget 8 -> 16 s and projection tuning 24 -> 28 s (c72,
 trimmed after two cap hits today) + `tmah` (c73) + merge-free one-token decode
 (c74) + `tma3` (c75). Expected run time 700-760 s. Read-outs: duration first;
 public-0 TPOT (floor/pass time), public-1/2 TPOT (GEMM kinds), TTFT unchanged.
+
+Result (candidate 76): commit `17e882c` succeeded, **1118.8** (normalized
+1126.2 on a 0.7% slower node; c67 1125.8): neutral. 723 s. Public TPOT 2.857 /
+3.982 / 4.045 ms - batch 1 -4.6% (back-to-back pass timing lowered the floor),
+batch 4 back in its usual 3.98-4.08 band (c67's 3.742 was the outlier), batch
+16 level. Keep. Public-0 TTFT 10.7 (min 10.1) - the TTFT-aware floor cannot
+show on public shapes (all clamp to 0.70 or never bind).
