@@ -1,24 +1,24 @@
 # Continue — Dryft Qwen3 engine
 
-## State (2026-09-19, ~15:45 UTC)
+## State (2026-09-19, ~16:00 UTC)
 
-**Leaderboard #1: 1075.684 tokens/s** (commit `b0e2d76`, candidate 36); teammate
-fork "dryfter" 1072.5 (github.com/john-jpet/fast-transformer tracks our main;
-the user wants its ideas ported: single-pass block attention and the prefill
-gate/up GEMM are in), Segfault 1013.9. User target: 1200. The level since
-candidate 29 is about 1065 +/- 10 (run noise); only steps of 2%+ are readable.
+**Leaderboard #1: 1092.267 tokens/s** (commit `45146de`, candidate 44); teammate
+fork "dryfter" 1087.3 (github.com/john-jpet/fast-transformer follows our main;
+the user wants its ideas ported - done for single-pass block attention, the
+prefill gate/up GEMM and the paired block kernel), Segfault 1013.9. User
+target: 1200. Run noise is about +/-1%; only steps of 2%+ are readable.
 The loop runs as the `autoresearch` skill. Collect results without blocking:
 `cd agent/tools && python3 collect_runs.py` (rebuilds `agent/results.tsv`).
-Queue at this moment, in order: c42 `0f40fa8` (consumers read split-GEMM
-partials, no merge launches), c43 `093634e` (two-context successor table +
-single-pass attention option; still contains the cuBLASLt and 64-row trials),
-c44 `45146de` (= c43 without those two trials), c47 `d10d105` (adds the ported
-prefill GEMM, block size measured at warmup, trimmed warmup budgets). Keep the
-queue at <= 4 runs; `./bin/dryft cancel <run_id>` drops superseded ones.
-A `git stash` holds GEMM occupancy variants (maxnreg / more warps).
-Subagents still working when this was written: lab draft-policy loop
-(`~/.cache/fasty-lab/REPORT_DRAFTS.md`), skinny-GEMM variant designer
-(`~/.cache/fasty-lab/gemm_variants/`).
+QUEUE DISCIPLINE (the user complained about a messy submissions page): at most
+two runs queued; hold finished work locally; cancel superseded runs with
+`./bin/dryft cancel <run_id>`.
+Queued now, in order: c48 `b1ca1cc` (c44 + ported prefill GEMM + block size
+measured at warmup incl. a 64-row option for batches 9-16 + trimmed warmup),
+c49 `80b0ec4` (+ ranked candidate drafts), c50 `662342b` (+ paired gate/up
+block kernel as a refine option). Known bad: cuBLASLt preference, forcing
+64-row blocks for every short prompt.
+A `git stash` holds GEMM occupancy variants (maxnreg / more warps); a subagent
+is designing skinny-GEMM variants in `~/.cache/fasty-lab/gemm_variants/`.
 
 ## What produced the jump from 933
 
