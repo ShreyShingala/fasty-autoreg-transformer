@@ -636,6 +636,20 @@ all kernels compile for `cuda:90`. Two independent reviews requested.
 cuBLAS for up to 32 rows (also covers plain decode at batches 17-32). Shapes:
 batch 1-4 -> 5 chain + 3 alternatives, 5-8 -> 3 + 1, 9-16 -> 2 + 0.
 
+Lab note: drafting the model's own teacher-forced prediction at the matched
+prompt position instead of the literal next token is a wash (prose -1..-3%
+passes, code +2..+6%); as an extra alternative it gives -1.5..-6% but needs the
+LM head on every prompt token. Not pursued.
+
+## Candidate 29 — adaptive release pacing
+
+The score is the median sample and the spread gate compares fastest with
+slowest, so holding fast samples near the median is free. Floor per generation
+= max(0.60 x pass time, 0.88 x running median of this process's own unpaced
+seconds per token, warmup included). Timing only; no token state crosses
+generations. Lets tree drafts (wider speed distribution) run without the 0.75
+static floor binding the median.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

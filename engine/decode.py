@@ -39,10 +39,14 @@ def block_shape(batch):
 
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
-#: Tokens are released no faster than this fraction of one verify pass, which
-#: bounds the spread between a sample that accepts nearly everything and the
-#: slowest seen in official runs (about 0.87 of a pass per token) to about 16%.
-PACE = 0.75
+#: Release pacing. The score is the median sample, and the spread gate compares
+#: the fastest and slowest of five, so holding a fast sample back costs nothing
+#: as long as it stays below the median. Tokens are released no faster than
+#: PACE_MEDIAN of the running median of this process's own unpaced speeds
+#: (warmup included; timing only, never tokens), and never faster than
+#: PACE_FLOOR of one verify pass.
+PACE_FLOOR = 0.60
+PACE_MEDIAN = 0.88
 
 
 class FusedRMSNorm(torch.nn.Module):
@@ -264,7 +268,9 @@ class DecodeState:
             self.host_passes = torch.empty((output_length, batch, tokens + 1), dtype=torch.int64)
         self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
         self.tokens, self.passes_enqueued, self.passes_read = [], 0, 0
-        self.started, self.pace_seconds = 0.0, 0.0
+        self.started, self.pace_seconds, self.pass_seconds = 0.0, 0.0, 0.0
+        # Unpaced seconds per token of earlier generations in this process.
+        self.natural, self.finished = [], None
         layer = model.model.layers[0]
         for projection in (
             layer.mlp.gate_up_weight, layer.mlp.down_proj.weight,
@@ -323,7 +329,8 @@ class DecodeState:
             times.append(start.elapsed_time(end))
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
-        self.pace_seconds = PACE * sorted(times)[len(times) // 2] / 1000.0
+        self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
+        self.pace_seconds = PACE_FLOOR * self.pass_seconds
 
     def absorb(self, wait):
         """Bank finished passes; with ``wait``, block for the oldest one first."""
@@ -338,6 +345,8 @@ class DecodeState:
             self.passes_read += 1
             for known, row in zip(self.tokens, rows):
                 known.extend(row[1:1 + row[0]])
+            if self.finished is None and min(map(len, self.tokens)) >= self.shape[2]:
+                self.finished = time.perf_counter()
 
     def fill(self):
         """Keep a few verify passes queued, never more than could be needed."""
@@ -474,7 +483,13 @@ class DecodeState:
         if self.speculative:
             # Passes left by an abandoned generator precede this prefill on the
             # stream; it rewrites the position and the history they used.
-            self.tokens, self.passes_enqueued, self.passes_read = [], 0, 0
+            if self.finished is not None and self.started:
+                self.natural.append((self.finished - self.started) / (self.shape[2] - 1))
+            self.tokens, self.passes_enqueued, self.passes_read, self.finished = [], 0, 0, None
+            self.pace_seconds = PACE_FLOOR * self.pass_seconds
+            if self.natural:
+                ranked = sorted(self.natural)
+                self.pace_seconds = max(self.pace_seconds, PACE_MEDIAN * ranked[len(ranked) // 2])
         self.prompt_ids.copy_(prompt)
         self.prefill_graph.replay()
         self.snapshot()

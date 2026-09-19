@@ -37,7 +37,8 @@ for seed in range(300):
     s.pass_events = [Event(rng) for _ in range(outputs)]
     s.events = [Event(rng)]; s.host_tokens = torch.tensor([[1000 * (b + 1) for b in range(batch)]])
     s.tokens, s.passes_enqueued, s.passes_read = [], 0, 0
-    s.started, s.pace_seconds = 0.0, 0.0
+    s.started, s.pace_seconds, s.pass_seconds = 0.0, 0.0, 0.0
+    s.natural, s.finished = [], None
     s.produced = [1] * batch
     s.spec_graph = Graph(s, rng)
     s.advance(5)
@@ -45,5 +46,5 @@ for seed in range(300):
     assert got == [[1000 * (b + 1) + i for b in range(batch)] for i in range(outputs)], (seed, got[:4])
     assert s.passes_enqueued <= outputs - 1 and s.passes_enqueued - s.passes_read <= SPEC_LOOKAHEAD
     wasted = s.passes_enqueued - s.passes_read
-    assert wasted <= SPEC_LOOKAHEAD
+    assert wasted <= SPEC_LOOKAHEAD and s.finished is not None
 print("host pass queue: exact per-row tokens in order for 300 random patterns (batched, query/synchronize paths); enqueueing bounded")
