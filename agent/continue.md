@@ -1,3 +1,34 @@
+# Latest update — 2026-09-19 21:50 UTC
+
+Best SSS run: **1144.3**, normalized **1143.7**, c91 `c758faf`, 692 s.
+The newer c93 `44edf62` scored 1103.3 / normalized 1111.5 in 833 s;
+the extra refinement budget has not established a gain. Keep the best tree.
+
+Current experiments:
+- c94 `9e15bd4`, direct NumPy completion-stamp reads: SSS run
+  `384e1371-67ac-48a7-b460-e23c1762880a`; also dryfter `61cef2a`.
+  All local gates passed; expect negligible score impact, useful as a repeat
+  of c93's tuning behavior. CPU forced-usable alias/reset/fallback checks passed.
+- c95 `0fbb6d7`, TMA weight loads for fused lm_head/argmax, dispatched to
+  Silver Bullet `77f25a5`; isolated worktree `/tmp/fasty-c95`. All local gates,
+  H100 compilation, and descriptor-coordinate emulation passed. GPU descriptor
+  behavior remains to be judged. This variant is not included in c96.
+- c96, incremental sibling membership in `_propose`: identical drafts in 300
+  interpreter cases; all gates pass. New code is six lines; PTX shrank 74% at
+  T=16 and shared memory 1024 -> 32 bytes. Performance remains unmeasured.
+
+Next promising work: refine() must compare an incumbent and challenger freshly,
+not a fresh challenger to a possibly 20-second-old minimum. Hold the incumbent
+CUDA graph and restore it when rejecting a challenger to avoid a recapture.
+This was independently identified by the Claude Code adversarial review.
+
+Public archive upload currently returns HTTP 405; use the authorized GitHub
+push workflow. The documentation-only run `21cb72e2` was canceled before start.
+Do not push documentation alone: every main push triggers an official run.
+Read `agent/EXPERIMENTS.md` for exact validation and dispatch records.
+
+The older notes below are historical where they disagree with this update.
+
 # Continue — Dryft Qwen3 engine
 
 ## State (2026-09-19, ~17:50 UTC)

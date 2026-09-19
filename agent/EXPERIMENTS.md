@@ -1649,3 +1649,57 @@ interpreter suite, and 4-layer real-model CPU smoke (115 s, 0 mismatches,
 105 kept-alternative relocations) passed. Mailbox alias/stale-generation/
 fallback checks passed; Mac poll microbenchmark: Torch 654 ns, view 124 ns
 (medians of five 100,000-call runs). No GPU-speed claim from that timing.
+
+## Candidate 95 - TMA weight loads in the fused vocabulary projection
+
+Hypothesis: the optional fused lm_head/argmax still uses ordinary BF16 loads,
+while the main skinny GEMMs already benefit from Hopper's pipelined TMA loads.
+Use the existing aligned [64,128] weight descriptor in that kernel, retaining
+its ascending K reduction, BF16 cast before argmax, and lowest-index tie rule.
+The existing numerical agreement check and captured-pass refinement still
+control whether the fused path is used. No new tuning option; one specialization
+replaces the old one where a descriptor is available. The ordinary-load path
+remains the fallback. Local compilation must show the async copies and WGMMA;
+CPU tests can exercise the fallback but cannot establish descriptor correctness.
+
+Local c95 checks passed: 10 unit tests, 46,129-byte validated archive,
+118 interpreter PASS lines plus 7 descriptor-coordinate/tie/fallback checks,
+4-layer whole-engine smoke (116 s, 0 mismatches), and all H100 offline
+argmax compiles. TMA specializations compiled in 0.5 s locally at each
+of 5/16/32 rows, with async tensor loads and WGMMA in PTX. CPU descriptor
+emulation checks indexing; real async-copy correctness remains a GPU gate.
+
+## Candidate 96 - incremental draft-sibling membership
+
+Hypothesis: `_propose` repeatedly broadcasts [history positions] against
+[all sibling lanes] to reject duplicate candidates, even though an iteration
+adds just one sibling. Maintain a one-dimensional `taken` mask, seeded with
+first draft/stale hint/sentinel, and OR in each successfully inserted token.
+The later successor-table fill is unchanged. This must produce identical
+drafts, chains and phases; no acceptance-policy change is intended. Expected
+benefit: fewer comparisons and reductions, especially on long histories.
+
+Local c96 checks: 300 speculation interpreter cases (248 alternative branches)
+match the reference; full interpreter suite has 118 PASS lines; 10 unit tests,
+archive validation (46,068 bytes), H100 speculation compiles and whole-engine
+CPU smoke (122 s, zero mismatches) pass. Compiler comparison at SIZE=551,T=16:
+PTX lines 10,134 -> 2,626; static shared memory 1,024 -> 32 bytes. T=8:
+5,385 -> 2,355 lines; T=4,SIZE=2086: 5,225 -> 4,058. These are compiler
+metrics, not latency measurements.
+
+Session read-out / dispatch notes (2026-09-19 21:50 UTC):
+- c93 `44edf62`: 1103.3, normalized 1111.5, 833 s. No evidence for the larger
+  refinement budget; c91 remains best. c94 repeats this base with only a host
+  polling change, so it is useful evidence about tuning variance.
+- c94 `9e15bd4`: SSS run `384e1371-67ac-48a7-b460-e23c1762880a`, measuring;
+  dryfter merge `61cef2a`, dispatched. Archive upload returned HTTP 405;
+  GitHub pushes are the working submission path. Canceled the documentation-only
+  duplicate `21cb72e2-9d9b-4435-ae1c-d4bb8ca0ed06` before it started.
+- c95 `0fbb6d7`: Silver Bullet merge `77f25a5`, dispatched separately from c96.
+- Claude's adversarial review agrees c94 is correct but estimates <0.02% score
+  effect: most faster polling only increases busy-wait iterations. Treat its
+  microbenchmark as host overhead only. The worthwhile follow-up is fresh paired
+  incumbent/challenger timings in refine(), which currently compares against a
+  minimum that can be 20 seconds old. A suggested 20 ms mailbox timeout is NOT
+  adopted: ordinary prefill itself takes over 100 ms. The forced-usable mailbox
+  check did exercise ready(); the CPU smoke alone does not.
