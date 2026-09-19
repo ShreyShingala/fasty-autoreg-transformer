@@ -1042,3 +1042,13 @@ go to the lowest index at both stages = torch.argmax. Used by the verify pass
 and plain decode (prefill keeps torch). Checks: Triton interpreter bit-exact vs
 torch.argmax on random, heavily tied, last-ragged-block and all-equal inputs
 (16 cases); cuda:90 compile at the real constants; whole-engine smoke 0 mismatches.
+
+Result (candidate 52): commit `d6ddeeb` CANCELED by the platform at the 900 s
+whole-run cap (917 s; candidate 48 took 710 s). The additions cost about 30 s
+per workload: `_inherit` compiles for the second block size AND for the
+one-token shapes once the budget was spent, a fourth GEMM candidate per shape,
+and a longer refine list whose options each recompile consumers for new split
+counts. Candidate 53 (already queued) removes the one-token part; candidate 54
+also trims the budgets (`_PROCESS_SECONDS` 24 -> 18, refine 14 -> 10 s).
+LESSON: every warmup second costs six (one per workload); measure run duration
+(`finishedAt - startedAt`) as a first-class result.

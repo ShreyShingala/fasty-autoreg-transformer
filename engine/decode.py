@@ -394,7 +394,7 @@ class DecodeState:
             if best is None or cost < best[0]:
                 best = (cost, size)
 
-    def refine(self, seconds=14.0):
+    def refine(self, seconds=10.0):
         """Keep a projection layout for the verify block only if the real pass gets faster.
 
         Isolated timings pick the starting layouts; here each validated
