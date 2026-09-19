@@ -1149,3 +1149,15 @@ batches above 16 where the KV read dominates the step at long context) the
 same split: whole tiles unmasked, only the last tile masked. Bit-identical to
 the committed kernel in the interpreter on 96 cases (positions 0, 1, tile
 edges, 3 layouts); cuda:90 compile ok; smoke test incl. a batch-20 plain shape.
+
+Result (candidate 58, 32 MiB cuBLAS workspace on c57): commit `663a895`
+succeeded, **1111.9** (c57: 1129.7, -1.6%); public 318.3 / 526.8 / 3180.3;
+790 s. Discard: reverted. PyTorch's default workspace stays. Candidate 60
+(`b36c802`), stacked on it, was canceled before it started.
+
+## Candidate 62 - c57 + refine-before-compare + hoisted GEMM + mask-free attention tiles + traffic-ordered tuning
+
+Everything held since c57, without the workspace change. The two attention
+changes are bit-identical by interpreter proof; the other two only change what
+warmup tuning may choose. If the score falls below c57, bisect: first drop the
+hoisted candidate, then refine-before-compare.
