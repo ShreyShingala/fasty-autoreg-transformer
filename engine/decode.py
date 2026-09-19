@@ -17,15 +17,22 @@ from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
 from speculate import accept, advance, propose
 
-#: Draft tokens verified per pass, by batch size. Shape-only policy: larger
-#: batches are paced by their slowest row while every row pays for its drafts.
-DRAFTS = {1: 4}
+def block_tokens(batch):
+    """Tokens per row in a verify block, from the batch size alone.
+
+    A block of at most 16 rows still reads each weight once, so it costs about
+    one ordinary step; beyond that every draft adds real compute while the
+    slowest row of a large batch sets the pace. One token means no speculation.
+    """
+    return max(1, min(5, 16 // batch))
+
+
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
 #: Tokens are released no faster than this fraction of one verify pass, which
-#: bounds the spread between a sample that accepts everything and one that
-#: accepts nothing to about 22%.
-PACE = 0.82
+#: bounds the spread between a sample that accepts nearly everything and the
+#: slowest seen in official runs (about 0.87 of a pass per token) to about 16%.
+PACE = 0.75
 
 
 class FusedRMSNorm(torch.nn.Module):
@@ -148,8 +155,8 @@ class DecodeState:
         # Verify a few proposed tokens per pass (speculate.py). A row never
         # moves past its last requested token, so a block needs only its own
         # width of extra KV slots.
-        self.speculative = batch in DRAFTS and output_length > 2 and hasattr(model, "successor")
-        self.block_size = DRAFTS.get(batch, 0) + 1
+        self.block_size = block_tokens(batch)
+        self.speculative = self.block_size > 1 and output_length > 2 and hasattr(model, "successor")
         if self.speculative:
             self.capacity += self.block_size
         self.cache = KVCache(

@@ -511,6 +511,22 @@ pacing. CPU checks: batched speculation equals sequential greedy in 400 cases,
 host queue exact in 300 batched patterns, block-attention index formulas match
 a causal reference, all kernels compile for `cuda:90`. Still batch one only.
 
+Result (candidate 21): commit `12620d1`, run
+`adb70316-1c3e-4532-9c13-a5ed85d2bb07` succeeded, ranked **947.031**. public-0:
+270.0 tokens/s (from 241), TPOT 3.480 ms, totals p10/p50/p90 118.0/118.5/124.6:
+the median sample sits on the 0.82 pace floor (pass about 4.24 ms), the slowest
+at about 0.87 of a pass per token. The new block kernels and per-row paths are
+H100-correct. The hidden score did not follow public-0 (+12% there, +1.5%
+overall versus candidate 19), so few hidden workloads are batch one.
+
+## Candidate 22 — batched speculation where a block fits 16 rows; pace 0.75
+
+`block_tokens(batch) = min(5, 16 // batch)`: batch 2-3 verify 5 tokens per row,
+4 -> 4, 5 -> 3, 6-8 -> 2, larger batches stay plain (a 48-row block would cost
+about 18% more per pass while the slowest of 16 rows sets the pace). Rows keep
+independent positions; a step is yielded when every row has it. PACE 0.75.
+Signals to read: public-1 TPOT (batch 4) and public-0 spread.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
