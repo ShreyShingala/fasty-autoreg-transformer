@@ -914,6 +914,18 @@ platform's noise floor).
 `block_candidates` offers (32, 64)-row blocks for batches 9-16; the warmup
 measurement of candidate 47 decides per workload.
 
+## Candidate 49 — ranked candidate drafts (lab policy R1, refit for the two-context table)
+
+`_propose_ranked`: up to 8 distinct history continuations (longest suffix, most
+recent) plus the table's 8 entries are scored linearly (suffix length, how
+often the token followed the newest token, occurrences in the row, table rank);
+the top candidate is draft 1 and fixes chain depth and copy source, the next
+ones are the alternatives. A line-by-line emulation of the kernel matches the
+lab's reference policy on 1280 of 1280 blocks; lab CV gain -1.5% passes pooled
+(-2.3% at 2-5 tokens per row, about -2% on batch-max metrics). Block layout
+contract unchanged, so exactness arguments carry over. num_warps 16 because the
+kernel now does three [history x 16] comparisons per row.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
