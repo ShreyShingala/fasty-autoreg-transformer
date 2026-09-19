@@ -123,3 +123,13 @@ paired gate/up block kernel, learned ranker kernel.
   left on the acceptance side is a better context-aware predictor for no-match
   passes, which without trained weights we do not have. Remaining work is
   pass time (fusion kernel, attention prefix loop) and prefill (cuDNN).
+- **Copy-logit siblings (RACER; the one new idea in the user's pasted research)
+  are DEAD** - lab, real model, 84 samples (`~/.cache/fasty-lab/plan/copy_logit.md`):
+  with logits available only at generated positions the best rule saves 1.2% of
+  passes at T=16 and 0.2% at T=4 (bars 4% / 2%); even with prompt logits
+  (+10% TTFT) it is 1.8% / 0.9%. Ranks 2-8 at the earlier occurrence hold the
+  next token 25% of the time, but only 9-10% are tokens our follower, history
+  and table siblings do not already offer. Draft-side ideas tested and dead
+  today: depth-2 trees, logit re-ranking, hidden-state match selection, pair
+  table, copy-logit. The draft side is exhausted for training-free methods on
+  this text; remaining work is pass time, tuning coverage and warmup time.
