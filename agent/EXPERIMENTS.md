@@ -774,6 +774,14 @@ Verify-graph refinement of projection tiles keeps.
 
 0.60 of a pass for outputs of 96 tokens or more, 0.70 otherwise.
 
+Result (candidate 34): commit `622d4fd`, run `75446ca0` succeeded, ranked
+**1065.376** (ties the best). public-0 286.2 (totals p10/p50/p90
+104.0/111.8/119.8: not floor-bound; about 0.78 passes per token, versus 0.61
+on the lab's proxy corpora, so the platform text is harder), public-1 523.9
+(TPOT 4.066), public-2 3197.9 (TPOT 4.209).
+
+## Candidate 39 — cuBLASLt trial (was "candidate 31")
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
