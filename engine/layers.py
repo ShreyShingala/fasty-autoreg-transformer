@@ -5,7 +5,8 @@ from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
 from kernels.decode_attention import block_attention, decode_attention
-from kernels.linear import linear
+from kernels.gated_linear import gated_linear
+from kernels.linear import MAX_ROWS, linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 
@@ -92,5 +93,9 @@ class PackedMLP(torch.nn.Module):
         self.train(reference.training)
 
     def forward(self, hidden_states, split_ok=False):
+        rows = hidden_states.numel() // hidden_states.shape[-1]
+        if rows > MAX_ROWS and hidden_states.dtype == torch.bfloat16:
+            # Prefill: gate/up GEMM with the SwiGLU epilogue, if it measured faster.
+            return linear(gated_linear(hidden_states, self.gate_up_weight), self.down_proj.weight)
         gate_up = linear(hidden_states, self.gate_up_weight, split_ok=split_ok)
         return linear(swiglu(gate_up), self.down_proj.weight, split_ok=split_ok)

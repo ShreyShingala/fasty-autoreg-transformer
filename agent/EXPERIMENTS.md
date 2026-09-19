@@ -857,6 +857,13 @@ rides in 42/43) so that 37, 42 and 43 run sooner.
 Separates the two speculative trials (39, 41) from the stack: if 44 beats 43,
 they hurt.
 
+## Candidate 45 — prefill gate/up GEMM with SwiGLU epilogue (ported from john-jpet's fork)
+
+`kernels/gated_linear.py`: for more than 32 rows a paired Triton GEMM computes
+gate and up tiles together and writes only the activated product (same BF16
+rounding boundaries), saving the SwiGLU pass over [rows, 2I]. Timed against
+cuBLAS + SwiGLU at warmup (10 s bound), kept only if faster. Read TTFT.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
