@@ -38,10 +38,7 @@ class PackedAttention(torch.nn.Module):
         # In a verify block the consumer kernels take a split projection's
         # FP32 partials directly (kernels/merged.py): no merge launch.
         block = past_key_value is not None and not past_key_value.prefilling and hidden_states.shape[1] > 1
-        # One-token decode steps (batches without speculation) hand their split
-        # partials to the same consumers: 144 merge launches fewer per step.
-        split = past_key_value is not None and not past_key_value.prefilling
-        packed = linear(hidden_states, self.qkv_weight, split_ok=split)
+        packed = linear(hidden_states, self.qkv_weight, split_ok=block)
         cos, sin = position_embeddings
         if past_key_value is not None:
             key = past_key_value.keys[self.layer_idx]
@@ -81,7 +78,7 @@ class PackedAttention(torch.nn.Module):
             attention, _ = grouped_sdpa(
                 self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
             )
-        return linear(attention.reshape(*output_shape, -1).contiguous(), self.o_proj.weight, split_ok=split), None
+        return linear(attention.reshape(*output_shape, -1).contiguous(), self.o_proj.weight, split_ok=block), None
 
 
 class PackedMLP(torch.nn.Module):

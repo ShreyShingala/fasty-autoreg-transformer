@@ -15,23 +15,12 @@ import triton.language as tl
 from kernels.tune import register
 
 
-def _wide_prefix(batch, capacity):
-    """Whether the unmasked whole-prefix loop pays for its extra code.
-
-    Measured on the platform (public TPOT, same drafts): with it, batch 16 x
-    640 slots got ~2.5% faster and batch 4 x 2086 stayed level, but batch 1 x
-    560 lost ~3-6% of its pass: there the kernel is bound by how many programs
-    fit on the device, not by the bytes of K and V it reads.
-    """
-    return batch * capacity >= 6000
-
-
 @triton.jit
 def _decode_partials(
     q_ptr, k_ptr, v_ptr, position_ptr, partial_ptr, stats_ptr,
     GROUPS: tl.constexpr, DIM: tl.constexpr, CAPACITY: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr, SCALE: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, PREFIX: tl.constexpr = False,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
     group = tl.program_id(0).to(tl.int64)  # flattened (batch, KV head)
     split = tl.program_id(1)
@@ -50,22 +39,19 @@ def _decode_partials(
     accumulator = tl.zeros((BLOCK_M, DIM), tl.float32)
     cache_base = group * CAPACITY * DIM
     # Whole tiles below ``end`` need no masks; only the last tile is ragged.
-    # PREFIX off: the first loop is empty and compiles away (see _wide_prefix).
-    whole = begin
-    if PREFIX:
-        whole = begin + tl.maximum(end - begin, 0) // BLOCK_N * BLOCK_N
-        for start in range(begin, whole, BLOCK_N):
-            tokens = start + columns
-            key = tl.load(k_ptr + cache_base + tokens[None, :] * DIM + dims[:, None])
-            scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
-            next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
-            probabilities = tl.exp2(scores - next_maximum[:, None])
-            correction = tl.exp2(maximum - next_maximum)
-            denominator = denominator * correction + tl.sum(probabilities, axis=1)
-            accumulator = accumulator * correction[:, None]
-            value = tl.load(v_ptr + cache_base + tokens[:, None] * DIM + dims[None, :])
-            accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
-            maximum = next_maximum
+    whole = begin + tl.maximum(end - begin, 0) // BLOCK_N * BLOCK_N
+    for start in range(begin, whole, BLOCK_N):
+        tokens = start + columns
+        key = tl.load(k_ptr + cache_base + tokens[None, :] * DIM + dims[:, None])
+        scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
+        next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
+        probabilities = tl.exp2(scores - next_maximum[:, None])
+        correction = tl.exp2(maximum - next_maximum)
+        denominator = denominator * correction + tl.sum(probabilities, axis=1)
+        accumulator = accumulator * correction[:, None]
+        value = tl.load(v_ptr + cache_base + tokens[:, None] * DIM + dims[None, :])
+        accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
+        maximum = next_maximum
     for start in range(whole, end, BLOCK_N):
         tokens = start + columns
         key = tl.load(
@@ -136,7 +122,7 @@ def _attend(query, key, value, position, scale, config):
         query, key, value, position, partial, stats,
         GROUPS=groups, DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk,
         SCALE=scale, BLOCK_M=max(16, triton.next_power_of_2(groups)), BLOCK_N=block_n,
-        PREFIX=_wide_prefix(batch, capacity), num_warps=warps, num_stages=2,
+        num_warps=warps, num_stages=2,
     )
     _decode_merge[(batch * query_heads,)](
         partial, stats, out, GROUPS=groups, DIM=dim, SPLITS=splits,
@@ -252,7 +238,7 @@ def _block_partials(
     q_ptr, k_ptr, v_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr, out_ptr,
     TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
     DIM: tl.constexpr, CAPACITY: tl.constexpr, SPLITS: tl.constexpr, CHUNK: tl.constexpr,
-    SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, PREFIX: tl.constexpr = False,
+    SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
     """Interval softmax for the TOKENS successive queries of one row and KV head.
 
@@ -287,21 +273,19 @@ def _block_partials(
     cache_base = group * CAPACITY * DIM
     # Tiles wholly inside the known prefix are visible to every query of the
     # block: no load masks, no visibility select. Same values, same order.
-    whole = begin
-    if PREFIX:
-        whole = begin + tl.maximum(tl.minimum(end, first) - begin, 0) // BLOCK_N * BLOCK_N
-        for start in range(begin, whole, BLOCK_N):
-            tokens = start + columns
-            key = tl.load(k_ptr + cache_base + tokens[None, :] * DIM + dims[:, None])
-            scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
-            next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
-            probabilities = tl.exp2(scores - next_maximum[:, None])
-            correction = tl.exp2(maximum - next_maximum)
-            denominator = denominator * correction + tl.sum(probabilities, axis=1)
-            accumulator = accumulator * correction[:, None]
-            value = tl.load(v_ptr + cache_base + tokens[:, None] * DIM + dims[None, :])
-            accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
-            maximum = next_maximum
+    whole = begin + tl.maximum(tl.minimum(end, first) - begin, 0) // BLOCK_N * BLOCK_N
+    for start in range(begin, whole, BLOCK_N):
+        tokens = start + columns
+        key = tl.load(k_ptr + cache_base + tokens[None, :] * DIM + dims[:, None])
+        scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
+        next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
+        probabilities = tl.exp2(scores - next_maximum[:, None])
+        correction = tl.exp2(maximum - next_maximum)
+        denominator = denominator * correction + tl.sum(probabilities, axis=1)
+        accumulator = accumulator * correction[:, None]
+        value = tl.load(v_ptr + cache_base + tokens[:, None] * DIM + dims[None, :])
+        accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
+        maximum = next_maximum
     for start in range(whole, end, BLOCK_N):
         tokens = start + columns
         key = tl.load(
@@ -394,11 +378,16 @@ def block_attention(query, key, value, position, scale, chain):
                 options.append(option)
         _BLOCK_LAYOUTS[shape] = default
         if not torch.cuda.is_current_stream_capturing():
-            # Refined first, as in the best measured engine (candidate 57): the
-            # traffic-ordered variant (candidates 66/67) coincided with a slower
-            # batch-one pass.
+            # Refinement order follows bytes read per layer: K and V of the
+            # whole prefix here (counted four times over: attention tiles run
+            # further from the bandwidth limit than the GEMMs) against a
+            # projection's n x k. At batch 1 x 512 the projections come first;
+            # at batch 4 x 2048 or batch 16 the attention layout does. Never
+            # below the smaller projections: a single-split layout also drops
+            # the merge launch of every layer, whatever the traffic.
             register(
-                ("block_attention",) + shape[1:], batch * tokens, 1 << 41, options,
+                ("block_attention",) + shape[1:], batch * tokens,
+                max(8 * batch * capacity * kv_heads * dim, 20_000_000), options,
                 lambda: _BLOCK_LAYOUTS[shape], lambda option: _BLOCK_LAYOUTS.__setitem__(shape, option),
             )
     block_n, splits, warps = _BLOCK_LAYOUTS[shape]
@@ -414,7 +403,7 @@ def block_attention(query, key, value, position, scale, chain):
         TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
         DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk, SCALE=scale,
         BLOCK_M=max(16, triton.next_power_of_2(members)), BLOCK_N=block_n,
-        PREFIX=_wide_prefix(batch, capacity), num_warps=warps, num_stages=2,
+        num_warps=warps, num_stages=2,
     )
     if splits > 1:
         _block_merge[(batch * tokens * query_heads,)](
