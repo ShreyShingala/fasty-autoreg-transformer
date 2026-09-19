@@ -1722,3 +1722,36 @@ normalized, 700 s; `5d61f22` (incremental draft sibling membership) canceled.
 91's tuning configuration, with Codex's shared-view mailbox read and the
 incremental sibling membership kept on top. Read-out: duration back to ~690 s
 and the score back to the 1140s.
+
+## Harness correction — several recorded dead ends were measurement artifacts
+
+`agent/local_cpu/offline_compile.py` built its `ASTSource` WITHOUT an
+`AttrsDescriptor`, so every offline compile told the compiler the pointers
+might be unaligned. Triton then refuses to vectorise (`vec = min(ptrContiguity,
+maskAlignment)`) and refuses to pipeline (`vec * bitwidth < 32` is dropped).
+The harness now passes `divisible_by_16` for every pointer plus any integer
+argument named in `divisible=`, exactly as the JIT launcher derives it. What
+changes when you ask the question correctly:
+
+| kernel | old (wrong) reading | true |
+|---|---|---|
+| `_rms_norm_kernel` | 64 scalar `ld.global.b16` | 8 x `ld.global.v4` |
+| `add_rms_norm` / `embed_norm` / `swiglu` | scalar | 12 / 8 / 2 x `v4` |
+| `_exact_gemm`, `_trans_gemm`, `_skinny_gemm` | no `cp.async`, PTX identical for num_stages 1-4 | **27 `cp.async` groups at num_stages 2, 39 at 3, 51 at 4, 63 at 5** |
+| `_gemv` | scalar | 4 x `v4` + 1 x `v2` |
+
+So: the small fused kernels were already vectorised, the GEMMs were already
+software-pipelined, and **`num_stages` was never inert** - three recorded dead
+ends (num_stages sweep, alignment hints, "Triton 3.1 does not vectorise BF16")
+died on bad evidence. A masked load with an unprovable bound is still scalar,
+which is the one part of the earlier reading that survives.
+
+## Candidate 96 - three-deep software pipeline for the non-TMA tile GEMMs
+
+`DEEP_STAGES = 3` for `exact`, `trans` and `hoist` (the `gemm` incumbent stays
+at two, so each shape's warmup times a two-stage and a three-stage kernel
+against each other and cuBLAS). Shared memory 20 -> 40 KB per CTA of the 227 KB
+per SM; the pipeline goes from 27 to 39 `cp.async` groups. Numerically
+identical - `num_stages` only schedules the copies. Checks: every offline
+compile script (0 failures, TMA/tmap structure assertions updated for the
+corrected harness), interpreter suite, smoke test, unit tests.

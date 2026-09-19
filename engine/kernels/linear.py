@@ -170,6 +170,18 @@ def _tma_descriptor(weight, block_n, block_k):
         return None
 
 
+#: Software-pipeline depth of the tile GEMMs: buffers of each tile held in
+#: shared memory while the next is fetched. A compile with JIT-accurate
+#: alignment attributes shows these kernels DO emit `cp.async` (27 groups at 2,
+#: 39 at 3, 51 at 4) at 20 KB of the 227 KB per SM per stage - the earlier
+#: "num_stages is inert here" reading came from an offline harness that never
+#: passed `divisible_by_16`, so the compiler assumed unaligned pointers and
+#: refused to pipeline or vectorise anything. Deeper trades occupancy for
+#: latency hiding, so `exact`/`trans`/`hoist` go three deep while the `gemm`
+#: incumbent stays at two: the warmup times them against each other.
+DEEP_STAGES = 3
+
+
 def _block_m(m):
     """Input-row lanes of a tile: tl.dot needs at least 16, and whole powers of two."""
     return 16 if m <= 16 else 32 if m <= 32 else 64
@@ -201,7 +213,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
             BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, TILES=4,
             EVEN_M=m == block_m, EVEN_N=n % (4 * block_n) == 0, EVEN_K=splits * chunk == k,
             WIDE=max(n * k, splits * m * n) + 8 * block_n * max(k, m) >= 2 ** 31,
-            num_warps=warps, num_stages=2,
+            num_warps=warps, num_stages=DEEP_STAGES,
         )
     elif kind == "tmah":
         # "trans" orientation, four TMA weight tiles per program sharing each x-tile load.
@@ -301,7 +313,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
                 x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
                 BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
                 EVEN_M=m == block_m, EVEN_N=n % block_n == 0, EVEN_K=splits * chunk == k, WIDE=wide,
-                num_warps=warps, num_stages=2,
+                num_warps=warps, num_stages=DEEP_STAGES,
             )
     if splits > 1 and split_ok:
         # The consumer kernel sums and rounds the partials itself.
