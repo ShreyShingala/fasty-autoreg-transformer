@@ -1346,3 +1346,16 @@ TMA stores), twin compiled on 20 shapes + 26 pointer-arithmetic replays (0
 failures), interpreter (twin) within 0.5 ulp and bit-equal to `trans` at equal
 split counts, smoke test, unit tests. GPU unknowns: speed; four live TMA tiles
 per program.
+
+## Candidate 74 - one-token decode steps consume split partials too (held)
+
+From the whole-system review (`~/.cache/fasty-lab/plan/whole_system_review.md`,
+item 1): the plain decode path (batches above 16, or outputs <= 2) asked every
+projection for a merged tensor: 4 x 36 = 144 `_merge_projection` launches per
+step that the QK-RoPE, add+RMSNorm and SwiGLU consumers already know how to
+absorb (they do in verify blocks). Now `split_ok` holds for every non-prefill
+step; the final norm takes the last layer's partials as they are; the one-token
+probes are tuned split-aware like the verify probes. Review's estimate: 4-10%
+for batch 17-32 workloads, none of which is public, so the read-out is the
+normalized score only. Smoke test now includes plain batches 20, 32 and 48 (0
+mismatches).

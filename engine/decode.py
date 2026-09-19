@@ -182,13 +182,16 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None, e
             attention, residual, layer.post_attention_layernorm.weight,
             layer.post_attention_layernorm.variance_epsilon,
         )
-        hidden = layer.mlp(normalized, split_ok=every)
+        hidden = layer.mlp(normalized, split_ok=not cache.prefilling)
     if every:
         normalized, _ = add_rms_norm(hidden, residual, base.norm.weight, base.norm.variance_epsilon)
         return linear(normalized, model.lm_head.weight)
     # RMSNorm acts independently on each token; earlier final states are unused.
+    if token_ids.shape[1] > 1:
+        hidden = hidden[:, -1:, :]
+    # (A one-token decode step may hand over split partials: nothing to slice.)
     normalized, _ = add_rms_norm(
-        hidden[:, -1:, :], residual[:, -1:, :],
+        hidden, residual[:, -1:, :],
         base.norm.weight, base.norm.variance_epsilon,
     )
     return linear(normalized, model.lm_head.weight)[:, 0, :]
@@ -240,7 +243,12 @@ class DecodeState:
                     # tail): the budget belongs to the verify-block shapes.
                     keep_native(batch, projection)
                 else:
-                    linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+                    # Timed the way the decode step uses them: layer projections
+                    # feed split-aware consumers, the vocabulary projection does not.
+                    linear(
+                        projection.new_zeros((batch, 1, projection.shape[1])), projection,
+                        split_ok=projection is not model.lm_head.weight,
+                    )
         # Likewise the launch widths of the small per-layer decode kernels.
         layer = model.model.layers[0]
         hidden = weight.new_zeros((batch, 1, weight.shape[1]))
