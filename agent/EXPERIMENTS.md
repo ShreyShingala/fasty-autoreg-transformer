@@ -848,6 +848,15 @@ output itself (no partials, no merge launch); offered to `refine` as layouts
 (64, 1) and (128, 1). Their other change, a gate/up GEMM with a SwiGLU
 epilogue, overlaps candidate 42 for decode; its prefill variant is not ported.
 
+Queue management (15:25 UTC): the platform queue was seven runs deep. Canceled
+the queued runs of candidates 38-41 with the CLI's `cancel` (their code still
+rides in 42/43) so that 37, 42 and 43 run sooner.
+
+## Candidate 44 — candidate 43 without the cuBLASLt and 64-row trials
+
+Separates the two speculative trials (39, 41) from the stack: if 44 beats 43,
+they hurt.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

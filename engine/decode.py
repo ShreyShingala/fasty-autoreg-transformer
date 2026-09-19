@@ -42,11 +42,6 @@ def block_shape(batch, prompt_length):
     if batch > 16:
         return 1, (0, 0, 0, 0)
     rows = 16 if (prompt_length >= 1536 or batch <= 2) else 32
-    if batch > 8 and prompt_length < 1536:
-        # Trial (candidate 41): cuBLAS is reported to carry up to 64 rows at
-        # about the cost of 16; official runs put a 32-row pass at batch 16
-        # within a few percent of a plain step. Four tokens per row.
-        rows = 64
     tokens = max(size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch))
     return tokens, DRAFTS_BY_MATCH[tokens]
 

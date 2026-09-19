@@ -16,12 +16,6 @@ class Engine:
         """Load the pinned checkpoint from model_path. Untimed, budgeted."""
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        # Trial (candidate 31): cuBLASLt's heuristics for the large BF16 prefill
-        # products. Same arithmetic class as cuBLAS; only kernel choice differs.
-        try:
-            torch.backends.cuda.preferred_blas_library("cublaslt")
-        except Exception as error:  # older/other builds: keep the default
-            print(f"cublaslt preference unavailable: {error!r}", flush=True)
         self.model = (
             AutoModelForCausalLM.from_pretrained(
                 model_path,
