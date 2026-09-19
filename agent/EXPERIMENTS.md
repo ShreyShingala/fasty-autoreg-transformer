@@ -1896,3 +1896,34 @@ Exactness class none: refine only picks among options that already passed the
 operator checks, and the graph is fixed before any measured sample.
 Dispatched to Silver Bullet as `aa472ef`. Gates: unit tests, `archive ok
 46060 bytes`, `SMOKE OK 81s`.
+
+Result (candidate 102, mailbox NumPy view, `4fbebc7`): **1129.1 raw, 1122.4
+normalized, node -0.6%, 743 s**. That is 21 points under the 1143.7 base, and
+the node was clean, so it is not a node artifact - but at 1.9% it is also only
+~1.5 sigma, so the honest reading is "no gain, possibly a small loss".
+**DISCARD.** Two independent reviews predicted exactly this before the run: the
+change is host-side only, it touches a spin loop that is not the batch-1
+bottleneck, and there is no mechanism by which it could pay. The trunk goes
+back to the 1144.3 tree; the split-K retune (c103) stays on its own branch
+(`keep-splitk`) until dryfter reports.
+
+## Candidate 105 - one lead-in replay before each timed group
+
+`capture_speculation` timed five groups of four graph replays and took
+`min(times)` as the pass time. Each group opened with a `synchronize`, then
+`start.record()`, and only then could the host get the first `cudaGraphLaunch`
+across - tens of microseconds of idle GPU under the sandboxed host, charged to
+the first pass of every group. `min` over groups cannot average that away
+because every group pays it, so `pass_seconds` was biased high.
+
+One untimed replay now runs between the synchronize and `start.record()`, so a
+pass is already in flight when the interval opens. Four groups of five keeps
+the twenty replays the loop always cost, so warmup wall-clock is unchanged.
+
+This converts because of pacing: at batch 1 the median sample sits on
+`pace_floor() x pass_seconds`, so a truer (smaller) pass time releases tokens
+sooner, roughly 1:1. Spread risk is the thing to watch - a lower floor lets the
+pinned samples run faster while the slowest is unchanged - but the latest
+public-0 samples spread 8.5% against a 25% gate, so a ~1% shift has room.
+Exactness class none: this is warmup measurement only, no kernel and no
+arithmetic changes.
