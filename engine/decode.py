@@ -24,6 +24,9 @@ def block_tokens(batch):
     one ordinary step; beyond that every draft adds real compute while the
     slowest row of a large batch sets the pace. One token means no speculation.
     """
+    if 8 < batch <= 16:
+        # One draft per row: a 32-row block through cuBLAS. Trial in c24.
+        return 2
     return max(1, min(5, 16 // batch))
 
 

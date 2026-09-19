@@ -556,6 +556,18 @@ replacing about sixty tiny PyTorch launches per verify pass (pass 4.24 ms vs
 a line-by-line emulation of the kernels equals them in 400 random cases, and
 both compile for `cuda:90`. Expected: about 0.15 ms per pass.
 
+Result (candidate 23): commit `631c296`, run
+`0d316a6b-e4b1-47bb-b56d-4b326de4ea4b` succeeded, ranked **1002.581** (new
+best; leaderboard #2, Segfault 1013.0). public-0 254.2 (TPOT 3.698, totals
+p10/p50/p90 123.2/125.9/126.1), public-1 496.1 (TPOT 4.467), public-2 2931.7.
+Public cases move within prompt-draw noise; the hidden aggregate rose 1.8%.
+
+## Candidate 24 — one draft per row for batches 9-16
+
+`block_tokens` returns 2 for 8 < batch <= 16: a 32-row verify block through
+cuBLAS. Expected about -10% passes for the slowest of 16 rows against an
+unknown extra pass cost; public-2 TPOT (4.56-4.65 ms plain) decides.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
