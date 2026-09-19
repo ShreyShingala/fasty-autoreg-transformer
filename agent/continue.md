@@ -3,15 +3,25 @@
 ## State (2026-09-19, ~17:50 UTC)
 
 **Leaderboard #1: 1129.7 tokens/s** (commit `c096f57`, candidate 57; whole run
-815 s against the 900 s cap). Silver Bullet 1104.0 (fork
+815 s against the 900 s cap). Silver Bullet 1112.7 (fork
 `sivakovivan/silver-transformer`, tracks our main, consented to idea sharing;
 their one idea - refine each block size before comparing - is in c60), dryfter
 1087.3 (`john-jpet/fast-transformer`), zip 1059.4. User target: 1200.
 Progress today: c48 1095.1 -> c53 1097.7 (GEMM tiles, keep_native) -> c54
 1115.0 (two-stage Triton argmax + trimmed budgets) -> c57 1129.7 (stale-guess
 sibling + cuDNN prefill option + frozen GC).
-In the queue: c58 `663a895` (32 MiB cuBLAS workspace), c60 `b36c802`
-(refine-before-compare + hoisted-x GEMM candidate, refine budget 8 s).
+c58 (32 MiB cuBLAS workspace) = 1111.9: discarded. In the queue (the platform
+is backed up; waits of 10+ min): c62 `8d34093` (c57 + refine-before-compare
+from Silver Bullet + hoisted-x GEMM candidate + mask-free attention prefix
+tiles + traffic-ordered tuning), c66 `da6c794` (+ warmup bundle: frozen heap
+before captures, one eager pass per refine option, split-aware projection
+tuning, prefill tuners REMOVED because TTFT never moved, `_PROCESS_SECONDS` 24,
+attention knob refined in traffic order). Held locally: refine tries only the
+three fastest layouts per projection. Subagents out: TMA descriptor-load GEMM
+candidate (worktree), copy-logit siblings lab test (RACER idea from the user's
+pasted research). Warmup audit: `~/.cache/fasty-lab/plan/warmup_audit.md`
+(host is gVisor: Triton compiles are slow; ~55 specializations + 35-45 graph
+captures per workload; platform overhead ~45 s per workload).
 RULES OF THE ROAD: keep one run measuring + one queued; record run duration
 (`finishedAt - startedAt`) with every score - c52 was canceled at 917 s; every
 warmup second costs six. The harness hides engine stdout on purpose (hidden
