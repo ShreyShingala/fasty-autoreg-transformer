@@ -1066,3 +1066,20 @@ prefill clears it (no state crosses generations). Drafts only: verification is
 untouched. Checks: check_tree emulation with hints = sequential greedy in 400
 cases (1506 hints used); Triton interpreter == emulation on 80 cases incl. the
 stale output; cuda:90 compile; whole-engine smoke 0 mismatches; unit tests.
+
+Candidate 56 deferred (reverted locally, never pushed; the work stays on branch
+`worktree-agent-a8f491703758a9453`, commit `a057bcd`): Codex's plan review - its
+acceptance figures are extrapolated and unshrunk; with the platform's 0.57
+shrink a 2-3 token block at 34-128 cuBLAS rows rarely beats plain decode, so the
+expected gain is ~0 against +8-15 s of warmup on such shapes. Revisit only with
+GPU timing of pass vs plain at batch 32.
+
+## Candidate 57 - bundle: stale-guess sibling (c55) + cuDNN prefill attention + frozen GC
+
+Independent read-outs: TPOT/passes (c55), TTFT (cuDNN vs FLASH, chosen per
+shape at warmup only if it runs on the real strides with GQA, agrees with FLASH
+on random inputs within 0.03 and is >= 5% faster; permanent FLASH fallback),
+spread (gc.freeze after warmup, no collections inside a generation).
+Codex review insight recorded: at batch 1 the median sample sits on the pacing
+floor (0.70 x pass time), so pass-TIME cuts move the score 1:1 there while
+fewer PASSES barely do; acceptance work pays at batch >= 4.
