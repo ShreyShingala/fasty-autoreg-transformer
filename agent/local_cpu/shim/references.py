@@ -64,6 +64,26 @@ def _add_rms_norm(grid, x_ptr, residual_ptr, w_ptr, out_ptr, sum_ptr, WIDTH, EPS
     flat(out_ptr, n).view(rows, WIDTH).copy_(normalized * flat(w_ptr, WIDTH).to(F32))
 
 
+@reference("_block_argmax")
+def _block_argmax(grid, logits, best_value, best_index, VOCAB, BLOCKS, BLOCK, **launch):
+    assert grid[1] == BLOCKS and BLOCKS * BLOCK >= VOCAB > (BLOCKS - 1) * BLOCK
+    rows = grid[0]
+    values = flat(logits, rows * VOCAB).view(rows, VOCAB).to(F32)
+    for block in range(BLOCKS):
+        tile = values[:, block * BLOCK:min((block + 1) * BLOCK, VOCAB)]
+        index = tile.argmax(-1)  # first maximum, as tl.max(..., tie_break_left)
+        flat(best_value, rows * BLOCKS).view(rows, BLOCKS)[:, block] = tile.gather(1, index[:, None])[:, 0]
+        flat(best_index, rows * BLOCKS).view(rows, BLOCKS)[:, block] = block * BLOCK + index
+
+
+@reference("_first_best")
+def _first_best(grid, best_value, best_index, out, BLOCKS, BLOCK_B, **launch):
+    assert BLOCK_B >= BLOCKS
+    rows = grid[0]
+    chosen = flat(best_value, rows * BLOCKS).view(rows, BLOCKS).argmax(-1)
+    flat(out, rows).copy_(flat(best_index, rows * BLOCKS).view(rows, BLOCKS).gather(1, chosen[:, None])[:, 0])
+
+
 @reference("_swiglu")
 def _swiglu(grid, packed, output, WIDTH, BLOCK, COUNT=1, SPLITS=1, **launch):
     rows = grid[0]

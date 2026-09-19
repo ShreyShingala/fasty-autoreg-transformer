@@ -1031,3 +1031,14 @@ the second verify-block size was tried. `keep_native` pins them to cuBLAS: the
 budget goes to verify-block shapes and every workload's warmup shrinks (room
 under the 900 s cap). Local smoke test: 0 mismatches, projection tunings per
 process 20 -> 10. Also: the layout check's comparison sits inside its guard.
+
+## Candidate 54 — two-stage Triton argmax (held until the queue has room)
+
+From the verify-pass cost model (`~/.cache/fasty-lab/plan/pass_cost.md`): torch's
+indexed reduction over 151936 columns is the largest PyTorch kernel left in a
+pass (est. 1-2% at 16 rows, 3-5% at 64 cuBLAS rows). `kernels/argmax.py`: per
+(row, 8192-column block) maximum + first index, then the first best block; ties
+go to the lowest index at both stages = torch.argmax. Used by the verify pass
+and plain decode (prefill keeps torch). Checks: Triton interpreter bit-exact vs
+torch.argmax on random, heavily tied, last-ragged-block and all-equal inputs
+(16 cases); cuda:90 compile at the real constants; whole-engine smoke 0 mismatches.

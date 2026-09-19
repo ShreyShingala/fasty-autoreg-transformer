@@ -126,5 +126,18 @@ def qkrope():
         report(f"qk_rope {mode} query", q.transpose(1, 2).contiguous(), wq.contiguous(), tol=0)
         report(f"qk_rope {mode} key cache", keys, rk, tol=0); report(f"qk_rope {mode} value cache", values, rv)
 
-which = sys.argv[1:] or ["qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention", "gated"]
+def argmax():
+    """kernels/argmax.py must be torch.argmax, including the first-index rule on ties (within and across blocks)."""
+    from kernels.argmax import argmax as kernel
+    for shape, block in (((3, 1000), 256), ((2, 2, 777), 64), ((5, 4096), 1024), ((1, 300), 512)):
+        logits = (torch.randn(shape) * 4).bfloat16()
+        report(f"argmax {shape} block={block}", kernel(logits, block=block), logits.argmax(-1))
+        coarse = torch.randint(-3, 4, shape).bfloat16()          # many exact ties
+        report(f"argmax ties {shape} block={block}", kernel(coarse, block=block), coarse.argmax(-1))
+        flat = torch.zeros(shape).bfloat16(); flat[..., -1] = 1.0  # maximum in the last, ragged block
+        report(f"argmax last {shape} block={block}", kernel(flat, block=block), flat.argmax(-1))
+        negative = torch.full(shape, -7.0).bfloat16()            # all equal and below the mask's fill
+        report(f"argmax equal {shape} block={block}", kernel(negative, block=block), negative.argmax(-1))
+
+which = sys.argv[1:] or ["argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention", "gated"]
 for name in which: section(globals()[name])

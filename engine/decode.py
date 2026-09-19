@@ -9,6 +9,7 @@ import time
 
 import torch
 
+from kernels.argmax import argmax
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
 from kernels.linear import keep_native, linear
@@ -330,7 +331,7 @@ class DecodeState:
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )
-        greedy = logits.argmax(dim=-1)
+        greedy = argmax(logits)
         # Keep what the model itself chose (chain drafts, or one alternative),
         # never past the last requested token; record it; move each row.
         spec.settle(
@@ -476,7 +477,7 @@ class DecodeState:
         logits = forward_last(
             self.model, self.token_ids, self.cache, self.position, rope
         )
-        self.token_ids.copy_(logits.argmax(dim=-1, keepdim=True))
+        self.token_ids.copy_(argmax(logits).unsqueeze(-1))
         self.position.add_(1)
 
     def capture(self):
