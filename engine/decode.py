@@ -9,7 +9,7 @@ import time
 
 import torch
 
-from kernels.argmax import argmax
+from kernels.argmax import argmax, greedy_tokens
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
 from kernels.linear import keep_native, linear
@@ -195,7 +195,9 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None, e
         hidden = layer.mlp(normalized, split_ok=not cache.prefilling)
     if every:
         normalized, _ = add_rms_norm(hidden, residual, base.norm.weight, base.norm.variance_epsilon)
-        return linear(normalized, model.lm_head.weight)
+        # The verify pass wants greedy tokens, not logits: the fused kernel
+        # never writes the [rows, vocabulary] tensor (kernels/argmax.py).
+        return greedy_tokens(normalized, model.lm_head.weight, linear)
     # RMSNorm acts independently on each token; earlier final states are unused.
     if token_ids.shape[1] > 1:
         hidden = hidden[:, -1:, :]
@@ -368,7 +370,7 @@ class DecodeState:
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )
-        greedy = argmax(logits)
+        greedy = logits  # forward_last(every=True) already reduced them
         # Keep what the model itself chose (chain drafts, or one alternative),
         # never past the last requested token; record it; move each row.
         spec.settle(

@@ -144,5 +144,15 @@ def argmax():
         negative = torch.full(shape, -7.0).bfloat16()            # all equal and below the mask's fill
         report(f"argmax equal {shape} block={block}", kernel(negative, block=block), negative.argmax(-1))
 
-which = sys.argv[1:] or ["argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention"]
+def fused_argmax():
+    """kernels/argmax.py fused lm_head+argmax == torch.argmax of the BF16-rounded product (first index on ties)."""
+    from kernels.argmax import fused_argmax as kernel
+    for m, n, k in ((16, 640, 256), (5, 512, 384), (20, 1280, 128), (32, 256, 256)):
+        x = torch.randn(m, k).bfloat16(); w = (torch.randn(n, k) * 0.05).bfloat16()
+        want = (x.float() @ w.float().T).bfloat16().argmax(-1)
+        report(f"fused_argmax m={m} n={n} k={k}", kernel(x, w), want)
+        tied = torch.zeros(m, k).bfloat16(); tied[:, 0] = 1.0; wt = torch.zeros(n, k).bfloat16(); wt[::7, 0] = 1.0  # many exact ties
+        report(f"fused_argmax ties m={m} n={n}", kernel(tied, wt), (tied.float() @ wt.float().T).bfloat16().argmax(-1))
+
+which = sys.argv[1:] or ["fused_argmax", "argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention"]
 for name in which: section(globals()[name])

@@ -84,6 +84,22 @@ def _first_best(grid, best_value, best_index, out, BLOCKS, BLOCK_B, **launch):
     flat(out, rows).copy_(flat(best_index, rows * BLOCKS).view(rows, BLOCKS).gather(1, chosen[:, None])[:, 0])
 
 
+@reference("_fused_block_argmax")
+def _fused_block_argmax(grid, x_ptr, weight_ptr, best_value, best_index, M, N, K, BLOCK_N, BLOCK_K, BLOCK_M, EVEN_M, **launch):
+    assert grid[0] * BLOCK_N == N and K % BLOCK_K == 0 and BLOCK_M >= M
+    x = flat(x_ptr, M * K).view(M, K).to(F32)
+    weight = flat(weight_ptr, N * K).view(N, K).to(F32)
+    logits = (x @ weight.T).to(BF16).to(F32)                       # rounded like the projection
+    tiles = grid[0]
+    values = flat(best_value, M * tiles).view(M, tiles)
+    indices = flat(best_index, M * tiles).view(M, tiles)
+    for tile in range(tiles):
+        chunk = logits[:, tile * BLOCK_N:(tile + 1) * BLOCK_N]
+        index = chunk.argmax(-1)                                    # first maximum
+        values[:, tile] = chunk.gather(1, index[:, None])[:, 0]
+        indices[:, tile] = tile * BLOCK_N + index
+
+
 @reference("_swiglu")
 def _swiglu(grid, packed, output, WIDTH, BLOCK, COUNT=1, SPLITS=1, **launch):
     rows = grid[0]

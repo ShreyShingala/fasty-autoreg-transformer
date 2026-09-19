@@ -1440,3 +1440,16 @@ PTX ISA (griddepcontrol, sm_90). Estimate: ~320 Triton->Triton boundaries x
 every kernel's PTX has the wait before its first global access
 (`compile_pdl.py`), the patched launcher source applies; interpreter suite,
 smoke test, unit tests pass.
+
+## Candidate 81 - fused lm_head + argmax (held; refine knob, default off)
+
+`_fused_block_argmax`: per 64-row vocabulary tile, weight[64, K] @ x^T over the
+whole of K (FP32, one split), rounded to BF16 exactly like the projection would
+have stored, then (max, first index) per row; `_first_best` reduces the 2374
+tiles. The [rows, 151936] logits tensor is never written or re-read (about
+5-10 MB per pass at 16-32 rows, plus one launch). Offered to refine as a knob
+after it agrees bitwise with project+argmax on a random probe; default off.
+Interpreter: bit-exact with torch.argmax of the BF16-rounded product on 8
+cases incl. heavy ties; cuda:90 compiles for rows 5/16/32; smoke test 0
+mismatches (30 fused launches). Expected: 1-2% of a batch-1 pass (Exa report:
+Cut Cross-Entropy / FMMS pattern; 1.2x on the head alone at our vocabulary).
