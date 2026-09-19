@@ -25,6 +25,12 @@ import triton
 import triton.language as tl
 
 FLAG = "FASTY_PDL"
+#: Measured on the platform (candidate 80): the batch-1 pass got 13% SLOWER
+#: and batch 4 5% slower with every kernel launched programmatically - the
+#: early-launched blocks occupy SMs while spinning at their wait and starve the
+#: bandwidth-bound kernel still running (llama.cpp saw the same for matvec).
+#: The wait instruction stays in the kernels (a no-op without the attribute).
+ENABLED = False
 #: The interpreter cannot execute inline PTX: compile the wait away there.
 ASM: tl.constexpr = os.environ.get("TRITON_INTERPRET") != "1"
 
@@ -118,7 +124,7 @@ def self_test(device, count=1024):
     attribute raises from the launcher (a RuntimeError, never an abort);
     a misordered result would show as the wrong sum. Either clears the flag.
     """
-    if not torch.cuda.is_available() or not install():
+    if not ENABLED or not torch.cuda.is_available() or not install():
         return False
     os.environ[FLAG] = "1"
     try:

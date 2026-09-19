@@ -1488,3 +1488,12 @@ identical (interpreter: query, keys, values bit-exact vs the gathered path);
 both modes compile for cuda:90; smoke test 0 mismatches. Three launches fewer
 per pass (~0.2-0.3%). The PACE_MEDIAN term stays: the pacing simulation put
 its cost at <= 0.05% and it removes ~10% of the residual spread violations.
+
+Result (candidate 80 = c79 + Programmatic Dependent Launch): commit `2721207`
+succeeded, **1119.2** (normalized 1127.3; c79: 1109.4), 769 s. Public TPOT
+3.389 / 4.073 / 4.170 ms (c79: 2.978 / 3.878 / 4.143): batch 1 +13%, batch 4
++5% SLOWER - PDL's early-launched blocks squat on SMs spinning at their wait
+and starve the bandwidth-bound kernel still running (llama.cpp reported the
+same for matvec kernels). The hidden aggregate still rose vs c79, which says
+c79's draw was low rather than PDL good. PDL DISABLED (`ENABLED = False`; the
+no-op wait instruction stays in the kernels). Keep-of-record: none.
