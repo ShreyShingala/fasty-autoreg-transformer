@@ -1,16 +1,24 @@
 # Continue — Dryft Qwen3 engine
 
-## State (2026-09-19, ~14:40 UTC)
+## State (2026-09-19, ~15:45 UTC)
 
-**Leaderboard #1: 1065.476 tokens/s** (commit `8a7b9f5`, candidate 29); Segfault
-1013.0. User target: 1200. The loop is run as the `autoresearch` skill
-(`.claude/skills/autoresearch`, also installed in `~/.claude/skills`); the log is
-`agent/results.tsv` (rebuild with `python3 agent/tools/make_results_tsv.py`).
-Queued on the platform at this moment, in order: c32 `ff9307f` (blocks within 16
-rows), c33 `f5adf3b` (verify-graph tile refinement), c34 `622d4fd` (pace floor
-0.70), c35 `f3e6c80` (chain depth from match length), c36 `b0e2d76` (warmup never
-sets the pace). Watch with `agent/tools/watch_run.py <sha>`. A stash holds the
-untried cuBLASLt trial (`git stash list`).
+**Leaderboard #1: 1075.684 tokens/s** (commit `b0e2d76`, candidate 36); teammate
+fork "dryfter" 1072.5 (github.com/john-jpet/fast-transformer tracks our main;
+the user wants its ideas ported: single-pass block attention and the prefill
+gate/up GEMM are in), Segfault 1013.9. User target: 1200. The level since
+candidate 29 is about 1065 +/- 10 (run noise); only steps of 2%+ are readable.
+The loop runs as the `autoresearch` skill. Collect results without blocking:
+`cd agent/tools && python3 collect_runs.py` (rebuilds `agent/results.tsv`).
+Queue at this moment, in order: c42 `0f40fa8` (consumers read split-GEMM
+partials, no merge launches), c43 `093634e` (two-context successor table +
+single-pass attention option; still contains the cuBLASLt and 64-row trials),
+c44 `45146de` (= c43 without those two trials), c47 `d10d105` (adds the ported
+prefill GEMM, block size measured at warmup, trimmed warmup budgets). Keep the
+queue at <= 4 runs; `./bin/dryft cancel <run_id>` drops superseded ones.
+A `git stash` holds GEMM occupancy variants (maxnreg / more warps).
+Subagents still working when this was written: lab draft-policy loop
+(`~/.cache/fasty-lab/REPORT_DRAFTS.md`), skinny-GEMM variant designer
+(`~/.cache/fasty-lab/gemm_variants/`).
 
 ## What produced the jump from 933
 
