@@ -592,6 +592,11 @@ the main source (33-39%). The platform corpus is harder than these proxies
 `propose` (reference and fused kernel) ranks earlier occurrences of the
 3/2/1-token suffix; the table is used only when the newest token never occurred.
 
+## Candidate 26 — block sizes from the lab
+
+`block_tokens`: batch 1 -> 9 tokens, 2 -> 8, 3 -> 5, 4 -> 4, 5-8 -> 3 (24 rows
+through cuBLAS), 9-16 -> 2, larger -> plain. Queued behind candidate 25.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

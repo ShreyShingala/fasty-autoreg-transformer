@@ -20,14 +20,22 @@ from kernels import spec
 def block_tokens(batch):
     """Tokens per row in a verify block, from the batch size alone.
 
-    A block of at most 16 rows still reads each weight once, so it costs about
-    one ordinary step; beyond that every draft adds real compute while the
-    slowest row of a large batch sets the pace. One token means no speculation.
+    Up to 16 rows a block still reads each weight once and costs about one
+    ordinary step, so small batches take long chains (offline, a chain of 8
+    needs 4% fewer passes than a chain of 4). Official runs showed 32-row
+    blocks through cuBLAS still pay at batch 16 with one draft; the second
+    draft is worth about 10% fewer passes, so batches 5-8 take it at 24 rows.
+    One token means no speculation.
     """
-    if 8 < batch <= 16:
-        # One draft per row: a 32-row block through cuBLAS. Trial in c24.
+    if batch <= 2:
+        return min(9, 16 // batch)
+    if batch <= 4:
+        return min(5, 16 // batch)
+    if batch <= 8:
+        return 3
+    if batch <= 16:
         return 2
-    return max(1, min(5, 16 // batch))
+    return 1
 
 
 #: Verify passes queued behind the GPU.
