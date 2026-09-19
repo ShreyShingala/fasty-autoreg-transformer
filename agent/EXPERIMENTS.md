@@ -1825,3 +1825,11 @@ change and was cancelled rather than risk a second failed slot.
 `engine/` is now identical to `c758faf`. This is the base every later change is
 measured against, one change per run, across three queues: SSS and Silver
 Bullet take the small single edits, dryfter takes architectural attempts.
+
+## Candidate 102 - poll the completion stamp through a shared NumPy view (isolated)
+
+The host release loop spins on `Mailbox.ready`, which indexed a pinned Torch
+tensor and built a Python scalar on every spin. A `.numpy()` view made once
+turns that into a memory read. Codex measured this inside a four-change stack
+(1136.7 normalized); here it is alone on the 1144.3 base. Cannot change a
+token: the stamp still gates the read, and the value compared is the same.

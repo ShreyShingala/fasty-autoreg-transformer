@@ -118,6 +118,9 @@ class Mailbox:
         except RuntimeError:
             self.flags = torch.zeros(slots, dtype=torch.int64)
             self.usable = False
+        # A shared view: polling a stamp is a memory read, not a Torch scalar
+        # built and dispatched on every spin of the host release loop.
+        self.flag_values = self.flags.numpy()
         self.stamps = torch.arange(1, slots + 1, dtype=torch.int64, device=device)
         self.base = 0
 
@@ -132,7 +135,7 @@ class Mailbox:
             self.flags[slot:slot + 1].copy_(self.stamps[slot:slot + 1], non_blocking=True)
 
     def ready(self, slot):
-        return self.usable and int(self.flags[slot]) == self.base + slot + 1
+        return self.usable and int(self.flag_values[slot]) == self.base + slot + 1
 
     def wait(self, slot, event, window=0.5):
         if self.usable:
