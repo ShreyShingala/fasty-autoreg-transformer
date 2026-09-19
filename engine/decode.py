@@ -8,6 +8,7 @@ storage remain BF16; fused pointwise operations preserve native cast boundaries.
 import torch
 
 from kernels.rmsnorm import add_rms_norm, rms_norm
+from kernels.decode_attention import decode_attention
 from kernels.linear import linear
 from layers import PackedAttention, PackedMLP
 
@@ -146,6 +147,13 @@ class DecodeState:
                 layer.self_attn.o_proj.weight,
             ):
                 linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+        # Choose the dense attention interval layout here, on the ordinary
+        # stream and at this shape's prompt length, never inside a capture.
+        attention = model.model.layers[0].self_attn
+        decode_attention(
+            weight.new_zeros((batch, model.config.num_attention_heads, 1, attention.head_dim)),
+            self.cache.keys[0], self.cache.values[0], self.position, attention.scaling,
+        )
         # One host row and one event per output step. Decode replays are
         # enqueued ahead of the consumer; each row is an ordered snapshot of
         # ``token_ids`` taken between two replays on the same stream.

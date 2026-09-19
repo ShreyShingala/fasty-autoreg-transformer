@@ -5,6 +5,9 @@ a disjoint interval; the second kernel combines their softmax normalizers.
 Every valid cache position contributes. No per-token host synchronization.
 """
 
+import statistics
+import time
+
 import torch
 import triton
 import triton.language as tl
@@ -90,6 +93,102 @@ def _decode_merge(
     tl.store(out_ptr + head * DIM + dims, numerator / denominator)
 
 
+def _attend(query, key, value, position, scale, config):
+    batch, query_heads, _, dim = query.shape
+    kv_heads, capacity = key.shape[1:3]
+    groups = query_heads // kv_heads
+    block_n, splits, warps = config
+    chunk = triton.cdiv(capacity, splits)
+    partial = torch.empty((batch * kv_heads, splits, groups, dim), device=query.device, dtype=torch.float32)
+    stats = torch.empty((batch * kv_heads, splits, groups, 2), device=query.device, dtype=torch.float32)
+    out = torch.empty((batch, 1, query_heads, dim), device=query.device, dtype=query.dtype)
+    _decode_partials[(batch * kv_heads, splits)](
+        query, key, value, position, partial, stats,
+        GROUPS=groups, DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk,
+        SCALE=scale, BLOCK_M=max(16, triton.next_power_of_2(groups)), BLOCK_N=block_n,
+        num_warps=warps, num_stages=2,
+    )
+    _decode_merge[(batch * query_heads,)](
+        partial, stats, out, GROUPS=groups, DIM=dim, SPLITS=splits,
+        BLOCK_S=triton.next_power_of_2(splits), num_warps=4,
+    )
+    return out
+
+
+def _default_config(batch, kv_heads, capacity):
+    block_n = 32 if batch * kv_heads < 16 else 64
+    # Enough independent KV intervals for small batches to occupy an H100.
+    # Shape-only policy: neither token values nor sample number affect it.
+    splits = min(32, triton.cdiv(256, batch * kv_heads), triton.cdiv(capacity, block_n))
+    return (block_n, splits, 4)
+
+
+def _graph_time(fn):
+    for _ in range(2):
+        fn()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        for _ in range(8):
+            fn()
+    graph.replay()
+    times = []
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    for _ in range(7):
+        start.record()
+        graph.replay()
+        end.record()
+        end.synchronize()
+        times.append(start.elapsed_time(end))
+    return statistics.median(times)
+
+
+_CONFIGS = {}
+_TUNING_SECONDS = 15.0
+
+
+def _choose(query, key, value, position, scale):
+    """Measure a few shape-only split layouts once, before graph capture.
+
+    Every layout is the same dense attention over every valid key; only the
+    interval partition differs. Keep the official-run default unless another
+    layout agrees with it and is measurably faster at this shape and length.
+    """
+    batch = query.shape[0]
+    kv_heads, capacity = key.shape[1:3]
+    default = _default_config(batch, kv_heads, capacity)
+    block_n, splits, _ = default
+    wanted = [
+        (64, splits, 4), (128, max(1, splits // 2), 4), (64, max(1, splits // 2), 4),
+        (64, min(32, splits * 2), 4), (128, splits, 4), (128, max(1, splits // 4), 4),
+    ]
+    candidates = []
+    for config in wanted:
+        config = (config[0], max(1, min(config[1], triton.cdiv(capacity, config[0]))), config[2])
+        if config != default and config not in candidates:
+            candidates.append(config)
+    deadline = time.monotonic() + _TUNING_SECONDS
+    reference = _attend(query, key, value, position, scale, default)
+    best, best_ms = default, _graph_time(lambda: _attend(query, key, value, position, scale, default))
+    for config in candidates:
+        if time.monotonic() >= deadline:
+            break
+        actual = _attend(query, key, value, position, scale, config)
+        if not torch.allclose(actual.float(), reference.float(), atol=0.02, rtol=0.02):
+            continue
+        elapsed = _graph_time(lambda: _attend(query, key, value, position, scale, config))
+        if elapsed < best_ms * 0.97:
+            best, best_ms = config, elapsed
+    if best != default:
+        # Recheck both after all compilation, so clock ramp cannot bias it.
+        default_ms = _graph_time(lambda: _attend(query, key, value, position, scale, default))
+        best_ms = _graph_time(lambda: _attend(query, key, value, position, scale, best))
+        if best_ms >= default_ms * 0.97:
+            best = default
+    print(f"decode attention warmup: layout={best} default={default}", flush=True)
+    return best
+
+
 def decode_attention(query, key, value, position, scale):
     """Q [B,Hq,1,D], KV [B,Hkv,C,D] -> [B,1,Hq,D]."""
     batch, query_heads, tokens, dim = query.shape
@@ -99,23 +198,9 @@ def decode_attention(query, key, value, position, scale):
     assert query.is_contiguous() and key.is_contiguous() and value.is_contiguous()
     assert value.shape == key.shape and key.shape[0] == batch and key.shape[3] == dim
     assert dim in (64, 128) and position.shape == (1,) and position.dtype == torch.int64
-    groups = query_heads // kv_heads
-    block_n = 32 if batch * kv_heads < 16 else 64
-    # Enough independent KV intervals for small batches to occupy an H100.
-    # Shape-only policy: neither token values nor sample number affect it.
-    splits = min(32, triton.cdiv(256, batch * kv_heads), triton.cdiv(capacity, block_n))
-    chunk = triton.cdiv(capacity, splits)
-    partial = torch.empty((batch * kv_heads, splits, groups, dim), device=query.device, dtype=torch.float32)
-    stats = torch.empty((batch * kv_heads, splits, groups, 2), device=query.device, dtype=torch.float32)
-    out = torch.empty((batch, 1, query_heads, dim), device=query.device, dtype=query.dtype)
-    _decode_partials[(batch * kv_heads, splits)](
-        query, key, value, position, partial, stats,
-        GROUPS=groups, DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk,
-        SCALE=scale, BLOCK_M=max(16, triton.next_power_of_2(groups)), BLOCK_N=block_n,
-        num_warps=4, num_stages=2,
-    )
-    _decode_merge[(batch * query_heads,)](
-        partial, stats, out, GROUPS=groups, DIM=dim, SPLITS=splits,
-        BLOCK_S=triton.next_power_of_2(splits), num_warps=4,
-    )
-    return out
+    shape = (query.device, batch, query_heads, kv_heads, capacity, dim)
+    if shape not in _CONFIGS:
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("attention layout selection must finish during eager warmup")
+        _CONFIGS[shape] = _choose(query, key, value, position, scale)
+    return _attend(query, key, value, position, scale, _CONFIGS[shape])

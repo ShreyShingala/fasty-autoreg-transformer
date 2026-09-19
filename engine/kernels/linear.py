@@ -80,7 +80,7 @@ def _merge_projection(
 
 
 def _project(x, weight, config):
-    kind, block_n, block_k, splits = config
+    kind, block_n, block_k, splits, warps = config
     m, k = x.shape
     n = weight.shape[0]
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
@@ -89,12 +89,12 @@ def _project(x, weight, config):
     if kind == "gemv":
         _gemv[(triton.cdiv(n, block_n), splits)](
             x, weight, partial, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4,
+            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps,
         )
     else:
         _skinny_gemm[(triton.cdiv(n, block_n), splits)](
             x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4, num_stages=2,
+            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps, num_stages=2,
         )
     if splits > 1:
         _merge_projection[(triton.cdiv(m * n, 512),)](
@@ -129,24 +129,42 @@ def _cold_graph_time(fn, flush):
 
 _CHOICES = {}
 _TUNING_DEADLINE = None
+_PROCESS_SECONDS = 50.0
+_SHAPE_SECONDS = 10.0
+
+
+def _candidates(m, n, k):
+    """Layouts in order of prior plausibility; the deadline truncates the tail."""
+    def gemm(block_n, block_k):
+        splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
+        return ("gemm", block_n, block_k, splits, 4)
+
+    configs = [gemm(64, 128)]
+    if m == 1:
+        configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4), ("gemv", 4, 1024, 1, 4)]
+        if k >= 8192:
+            # A long reduction is serial inside one program; split it.
+            configs.append(("gemv", 8, 512, 4, 4))
+        configs.append(("gemv", 8, 1024, 1, 8))
+    else:
+        configs += [gemm(32, 256), gemm(128, 128), gemm(32, 128)]
+    return configs
 
 
 def _choose(x, weight):
     global _TUNING_DEADLINE
+    now = time.monotonic()
     if _TUNING_DEADLINE is None:
-        _TUNING_DEADLINE = time.monotonic() + 12.0
-    if time.monotonic() >= _TUNING_DEADLINE:
+        _TUNING_DEADLINE = now + _PROCESS_SECONDS
+    if now >= _TUNING_DEADLINE:
         return None
+    # Every workload is a fresh process: bound each shape and the process so
+    # compilation fits the load/warmup and whole-run budgets, and so one slow
+    # shape cannot leave the later projections unmeasured.
+    shape_deadline = min(_TUNING_DEADLINE, now + _SHAPE_SECONDS)
     m, k = x.shape
     n = weight.shape[0]
-    configs = []
-    # Keep the initial search small: every workload starts a fresh process and
-    # compilation must fit the event's load/warmup and whole-run budgets.
-    for block_n, block_k in ((64, 128),):
-        splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
-        configs.append(("gemm", block_n, block_k, splits))
-    if m == 1:
-        configs.append(("gemv", 8, 512, 1))
+    configs = _candidates(m, n, k)
     # Private generator: tuning must not change any caller's RNG state.
     generator = torch.Generator(device=x.device).manual_seed(1729)
     probe = torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
@@ -155,7 +173,7 @@ def _choose(x, weight):
     native_ms = _cold_graph_time(lambda: F.linear(x, weight), flush)
     best_ms, best = native_ms, None
     for config in configs:
-        if time.monotonic() >= _TUNING_DEADLINE:
+        if time.monotonic() >= shape_deadline:
             break
         actual = _project(probe, weight, config)
         # Reject a kernel that fails an operator sanity check. Full-model

@@ -176,9 +176,9 @@ def main():
             x = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16)
             weight = torch.randn(outputs, width, device="cuda", dtype=torch.bfloat16) * 0.02
             expected = torch.nn.functional.linear(x, weight)
-            configs = [("gemm", 64, 128, 1), ("gemm", 64, 128, 4)]
+            configs = [("gemm", 64, 128, 1, 4), ("gemm", 64, 128, 4, 4), ("gemm", 32, 256, 2, 4), ("gemm", 128, 128, 1, 4)]
             if rows == 1:
-                configs.append(("gemv", 8, 512, 1))
+                configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4), ("gemv", 4, 1024, 1, 4), ("gemv", 8, 512, 4, 4), ("gemv", 8, 1024, 1, 8)]
             for config in configs:
                 actual = _project(x, weight, config)
                 torch.testing.assert_close(actual, expected, atol=0.001, rtol=0.016)
