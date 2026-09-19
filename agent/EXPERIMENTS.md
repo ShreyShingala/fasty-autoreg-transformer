@@ -1778,3 +1778,16 @@ the run died in warmup).
 candidate 97's skip of a deeper-pipeline candidate whose base kind already lost
 to cuBLAS. Target: back to ~700 s with margin for a slow node. Read-out:
 duration first - a finished run is worth more than any layout.
+
+## Candidate 99 - name the Triton cache directory so it survives the six workloads
+
+Each workload is a fresh process and the warmup audit puts 45-55 s of its 65-75 s
+load/warmup in Triton compilation; six of those share the 900 s run limit, and
+two runs have now been cancelled at 915-919 s. Triton keys its on-disk cache by
+source plus constants, so every kernel whose shape repeats across workloads is a
+hit - but the default cache lives under HOME, which we do not own on this
+platform. `engine.py` now sets `TRITON_CACHE_DIR=/tmp/fasty-triton-cache` (before
+importing torch/triton) and falls back silently if it cannot be created. If the
+six workloads share a container this is worth 100-200 s per run; if each gets a
+fresh one it is a no-op. Either way nothing about the engine's arithmetic or
+layout choices changes. Read-out: run duration.

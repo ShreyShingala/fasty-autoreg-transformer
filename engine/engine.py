@@ -1,6 +1,21 @@
 """BF16 Qwen3 with a reusable KV cache and one CUDA graph per decode shape."""
 
 import gc
+import os
+
+# Each workload is a fresh process and ~45-55 s of its load/warmup budget is
+# Triton compiling the same kernels again; six of those share one 900 s run
+# limit, and two runs have already been cancelled at 915-919 s. Triton keys its
+# on-disk cache by source and constants, so every kernel whose shape repeats
+# across workloads is a hit -- but only if the cache directory outlives the
+# process and is writable. The default is under HOME, which we do not own here;
+# name one explicitly and fall back to the default if it cannot be created.
+_CACHE = os.environ.get("TRITON_CACHE_DIR") or "/tmp/fasty-triton-cache"
+try:
+    os.makedirs(_CACHE, exist_ok=True)
+    os.environ["TRITON_CACHE_DIR"] = _CACHE
+except OSError as _error:  # read-only filesystem: Triton keeps its own default
+    print(f"triton cache directory unavailable: {_error!r}", flush=True)
 
 import torch
 from transformers import AutoModelForCausalLM
