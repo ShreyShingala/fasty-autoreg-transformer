@@ -1519,3 +1519,12 @@ candidate reads out only when it beats that team's previous best.
   attention search above batch 16. Their previous best: 1123.9.
 - Silver Bullet <- candidate 85 tree (`53e4a7a`, second draw): pending (their
   main moved during the first attempt).
+
+Result (candidate 82 = c80 + fused lm_head/argmax knob, per-batch table
+reverted): commit `f8da493` succeeded, **1121.4** (normalized 1125.3), 745 s.
+Public TPOT 2.915 / 3.711 / 4.148 ms: batch 1 back to normal with PDL still ON
+(c80's 3.389 was a warmup-tuning draw, not PDL), batch 4 the best ever. Keep.
+PLATEAU: c76, c80, c82 all normalize to 1125-1127; c67's 1130.6 was a good
+draw of the same level (its rerun: 1118.4). c85 (PDL off + mailbox + rope
+tables) is the PDL A/B. Warmup tuning outcomes vary per run and move public
+TPOT by up to 10%: treat single public probes accordingly.
