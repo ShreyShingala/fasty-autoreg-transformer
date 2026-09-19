@@ -412,7 +412,10 @@ class DecodeState:
         """
         deadline = time.monotonic() + seconds
         best = self.pass_seconds
-        for knob in knobs(self.shape[0] * self.block_size):
+        ordered = knobs(self.shape[0] * self.block_size)
+        for knob in ordered:
+            if any(other.shadows == knob.name and other.get() is not None for other in ordered):
+                continue  # replaced by the kernel just chosen: nothing to measure
             chosen = knob.get()
             for option in knob.options:
                 if option == chosen or time.monotonic() >= deadline:

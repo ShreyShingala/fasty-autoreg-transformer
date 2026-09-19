@@ -162,6 +162,7 @@ def block_option(x, weight):
             register(
                 ("gated_block",) + key[1:], flat.shape[0], weight.numel() + 1, [None, option],
                 lambda: _BLOCK_CHOICES[key], lambda choice: _BLOCK_CHOICES.__setitem__(key, choice),
+                shadows=("projection",) + key[1:],
             )
     return _BLOCK_CHOICES[key]
 

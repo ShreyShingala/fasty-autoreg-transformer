@@ -31,16 +31,18 @@ def pick(key, default, options, launch):
 class Knob:
     """One frozen-at-warmup choice that the captured decode step can re-judge."""
 
-    def __init__(self, name, rows, weight, options, get, select):
+    def __init__(self, name, rows, weight, options, get, select, shadows=None):
         self.name, self.rows, self.weight = name, rows, weight
         self.options, self.get, self.select = options, get, select
+        # Name of a knob that has no effect while this one's choice is not None.
+        self.shadows = shadows
 
 
 _KNOBS = {}
 
 
-def register(name, rows, weight, options, get, select):
-    _KNOBS[name] = Knob(name, rows, weight, options, get, select)
+def register(name, rows, weight, options, get, select, shadows=None):
+    _KNOBS[name] = Knob(name, rows, weight, options, get, select, shadows)
 
 
 def knobs(rows):
