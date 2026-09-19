@@ -73,6 +73,13 @@ PACE_FLOOR = 0.70
 PACE_FLOOR_LONG = 0.60
 LONG_OUTPUT = 96
 PACE_MEDIAN = 0.88
+#: The gate compares whole samples, prefill included: fastest = ttft + F x D,
+#: slowest plausible = ttft + WORST_PASSES x D (D = pass time x steps), and
+#: slowest <= 1.25 x fastest gives F >= (WORST_PASSES x D - 0.25 x ttft) / (1.25 x D).
+#: With a 512-token prompt that is 0.70 again; a long prompt earns a lower
+#: floor (offline: 0.66 at 2048 tokens, batch one). Never above PACE_FLOOR.
+WORST_PASSES = 0.90
+PACE_FLOOR_MIN = 0.60
 
 
 class FusedRMSNorm(torch.nn.Module):
@@ -173,13 +180,16 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None, e
             attention, residual, layer.post_attention_layernorm.weight,
             layer.post_attention_layernorm.variance_epsilon,
         )
-        hidden = layer.mlp(normalized, split_ok=every)
+        hidden = layer.mlp(normalized, split_ok=not cache.prefilling)
     if every:
         normalized, _ = add_rms_norm(hidden, residual, base.norm.weight, base.norm.variance_epsilon)
         return linear(normalized, model.lm_head.weight)
     # RMSNorm acts independently on each token; earlier final states are unused.
+    if token_ids.shape[1] > 1:
+        hidden = hidden[:, -1:, :]
+    # (A one-token decode step may hand over split partials: nothing to slice.)
     normalized, _ = add_rms_norm(
-        hidden[:, -1:, :], residual[:, -1:, :],
+        hidden, residual[:, -1:, :],
         base.norm.weight, base.norm.variance_epsilon,
     )
     return linear(normalized, model.lm_head.weight)[:, 0, :]
@@ -231,7 +241,12 @@ class DecodeState:
                     # tail): the budget belongs to the verify-block shapes.
                     keep_native(batch, projection)
                 else:
-                    linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+                    # Timed the way the decode step uses them: layer projections
+                    # feed split-aware consumers, the vocabulary projection does not.
+                    linear(
+                        projection.new_zeros((batch, 1, projection.shape[1])), projection,
+                        split_ok=projection is not model.lm_head.weight,
+                    )
         # Likewise the launch widths of the small per-layer decode kernels.
         layer = model.model.layers[0]
         hidden = weight.new_zeros((batch, 1, weight.shape[1]))
@@ -269,6 +284,7 @@ class DecodeState:
         self.enqueued = 0
         self.graph = None
         self.prefill_graph = None
+        self.prefill_seconds = 0.0
         self.capture_prefill()
         if self.speculative:
             self.choose_block(model, weight)
@@ -365,21 +381,37 @@ class DecodeState:
         with torch.cuda.graph(self.spec_graph, stream=stream):
             self.speculate()
         current.wait_stream(stream)
-        # The pass time sets the release pace that bounds sample-to-sample spread.
+        # The pass time sets the release pace that bounds sample-to-sample
+        # spread. Passes run back to back in a generation, so they are timed
+        # back to back: four per reading, without the launch and wake-up
+        # latency that a synchronize after every replay adds to each one.
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         times = []
-        for _ in range(12):
+        for _ in range(3):
             self.row_position.fill_(self.shape[1])
+            torch.cuda.synchronize(self.device)
             start.record()
-            self.spec_graph.replay()
+            for _ in range(4):
+                self.spec_graph.replay()
             end.record()
             end.synchronize()
-            times.append(start.elapsed_time(end))
+            times.append(start.elapsed_time(end) / 4)
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
         self.stale.fill_(-1)
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
-        self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
+        self.pace_seconds = self.pace_floor() * self.pass_seconds
+
+    def pace_floor(self):
+        """Fastest allowed release, as a fraction of the pass time (shape-only, fixed at warmup)."""
+        outputs = self.shape[2]
+        if outputs >= LONG_OUTPUT:
+            return PACE_FLOOR_LONG
+        decode = (outputs - 1) * self.pass_seconds
+        if decode <= 0.0:
+            return PACE_FLOOR
+        floor = (WORST_PASSES * decode - 0.25 * self.prefill_seconds) / (1.25 * decode)
+        return min(PACE_FLOOR, max(PACE_FLOOR_MIN, floor))
 
     def choose_block(self, model, weight):
         """Measure each candidate block size on this workload's real shape; keep the best.
@@ -394,7 +426,9 @@ class DecodeState:
         refined layouts are keyed by row count, so the winner keeps them.
         """
         long_output = self.shape[2] >= LONG_OUTPUT
-        seconds = 8.0 / len(self.candidates)  # every refine call may overrun by one option
+        # The whole run has room again (612 s of 900 with candidate 67): spend it
+        # where layouts are judged inside the real graph.
+        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:
@@ -560,6 +594,17 @@ class DecodeState:
             with torch.cuda.graph(self.prefill_graph, stream=stream):
                 self.prefill_forward()
             current.wait_stream(stream)
+            # Prefill time of this shape: the pacing floor accounts for it.
+            start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            times = []
+            for _ in range(3):
+                torch.cuda.synchronize(self.device)
+                start.record()
+                self.prefill_graph.replay()
+                end.record()
+                end.synchronize()
+                times.append(start.elapsed_time(end))
+            self.prefill_seconds = sorted(times)[1] / 1000.0
         finally:
             self.cache.prefilling = False
 
@@ -598,7 +643,7 @@ class DecodeState:
                 self.natural.append((self.finished - self.started) / (self.shape[2] - 1))
             self.generations += 1
             self.tokens, self.passes_enqueued, self.passes_read, self.finished = [], 0, 0, None
-            self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
+            self.pace_seconds = self.pace_floor() * self.pass_seconds
             if self.natural:
                 ranked = sorted(self.natural)
                 # Lower median: one slow early generation must not hold the rest back.

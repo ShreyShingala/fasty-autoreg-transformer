@@ -9,6 +9,8 @@ reorder the FP32 sum over K; the single rounding to BF16 is unchanged.
 ``hoist`` is ``exact`` with one x-tile load shared by TILES weight tiles: with
 16-32 input rows a program's x chunk is a quarter to a half of the bytes of a
 64-row weight tile, and every tile used to reload it. Same sums as ``exact``.
+``tmah`` is that hoist in ``trans`` orientation with TMA weight loads (``tma``
+x ``hoist``); ``_hoist_trans_gemm`` is its ordinary-load twin on the same grid.
 """
 
 import triton
@@ -198,6 +200,115 @@ def _tma_gemm(
         out_ptr + split * (M * N) + columns[:, None] + rows[None, :] * N, acc,
         row_ok, row_ok, True, EVEN_M,
     )
+
+
+@triton.jit
+def _hoist_trans_gemm(
+    x_ptr, weight_ptr, out_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    SPLITS: tl.constexpr, CHUNK: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
+    TILES: tl.constexpr,
+    EVEN_M: tl.constexpr, EVEN_N: tl.constexpr, EVEN_K: tl.constexpr, WIDE: tl.constexpr,
+):
+    """``_trans_gemm`` with one x-tile load shared by TILES weight tiles per program.
+
+    The ordinary-load twin of ``_tmah_gemm``: same grid, same partial layout,
+    same ``tl.dot(weight_t, x^T, acc_t)`` per K chunk, so the launcher may fall
+    back to it without changing anything downstream.
+    """
+    rows = tl.arange(0, BLOCK_M)
+    columns = tl.program_id(0) * (TILES * BLOCK_N) + tl.arange(0, BLOCK_N)
+    if WIDE:
+        columns = columns.to(tl.int64)
+    split = tl.program_id(1)
+    k = split * CHUNK + tl.arange(0, BLOCK_K)
+    row_ok = rows[None, :] < M
+    # weight tiles [BLOCK_N, BLOCK_K] in storage orientation; the shared x tile transposed [BLOCK_K, BLOCK_M].
+    w_ptrs = weight_ptr + columns[:, None] * K + k[None, :]
+    x_ptrs = x_ptr + k[:, None] + rows[None, :] * K
+    # Tile t covers columns + t * BLOCK_N: its weights start t * BLOCK_N rows further.
+    w_step = BLOCK_N * K
+    ok0 = columns[:, None] < N
+    ok1 = (columns[:, None] + BLOCK_N) < N
+    acc0 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    acc1 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    if TILES == 4:
+        ok2 = (columns[:, None] + 2 * BLOCK_N) < N
+        ok3 = (columns[:, None] + 3 * BLOCK_N) < N
+        acc2 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+        acc3 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    for step in range(0, CHUNK // BLOCK_K):
+        k_ok = (k + step * BLOCK_K) < K
+        x = _load_tile(x_ptrs, k_ok[:, None], row_ok, EVEN_K, EVEN_M)
+        acc0 = tl.dot(_load_tile(w_ptrs, ok0, k_ok[None, :], EVEN_N, EVEN_K), x, acc0)
+        acc1 = tl.dot(_load_tile(w_ptrs + w_step, ok1, k_ok[None, :], EVEN_N, EVEN_K), x, acc1)
+        if TILES == 4:
+            acc2 = tl.dot(_load_tile(w_ptrs + 2 * w_step, ok2, k_ok[None, :], EVEN_N, EVEN_K), x, acc2)
+            acc3 = tl.dot(_load_tile(w_ptrs + 3 * w_step, ok3, k_ok[None, :], EVEN_N, EVEN_K), x, acc3)
+        w_ptrs += BLOCK_K
+        x_ptrs += BLOCK_K
+    # acc_t[j, i] is output row i, column columns[j] + t * BLOCK_N.
+    o_ptrs = out_ptr + split * (M * N) + columns[:, None] + rows[None, :] * N
+    _store_tile(o_ptrs, acc0, ok0, row_ok, EVEN_N, EVEN_M)
+    _store_tile(o_ptrs + BLOCK_N, acc1, ok1, row_ok, EVEN_N, EVEN_M)
+    if TILES == 4:
+        _store_tile(o_ptrs + 2 * BLOCK_N, acc2, ok2, row_ok, EVEN_N, EVEN_M)
+        _store_tile(o_ptrs + 3 * BLOCK_N, acc3, ok3, row_ok, EVEN_N, EVEN_M)
+
+
+@triton.jit
+def _tmah_gemm(
+    x_ptr, desc_ptr, out_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    SPLITS: tl.constexpr, CHUNK: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
+    TILES: tl.constexpr,
+    EVEN_M: tl.constexpr, WIDE: tl.constexpr,
+):
+    """``_hoist_trans_gemm`` with every weight tile read through the TMA tensor map.
+
+    One ordinary x-tile load per K chunk feeds TILES descriptor loads, each at
+    its own element offset (first + t * BLOCK_N, k): ``_tma_gemm``'s descriptor
+    (the same [BLOCK_N, BLOCK_K] tiling), ``_tma_gemm``'s operand orientation
+    (never transpose a loaded tile: see there), ``_trans_gemm``'s sums. The
+    launcher guarantees N % (TILES * BLOCK_N) == 0 and SPLITS * CHUNK == K.
+    """
+    rows = tl.arange(0, BLOCK_M)
+    first = tl.program_id(0) * (TILES * BLOCK_N)
+    columns = first + tl.arange(0, BLOCK_N)
+    if WIDE:
+        columns = columns.to(tl.int64)
+    split = tl.program_id(1)
+    start = split * CHUNK
+    k = start + tl.arange(0, BLOCK_K)
+    row_ok = rows[None, :] < M
+    x_ptrs = x_ptr + k[:, None] + rows[None, :] * K
+    acc0 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    acc1 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    if TILES == 4:
+        acc2 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+        acc3 = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    for step in range(0, CHUNK // BLOCK_K):
+        at = start + step * BLOCK_K
+        x = _load_tile(x_ptrs, row_ok, row_ok, True, EVEN_M)
+        acc0 = tl.dot(tl._experimental_descriptor_load(
+            desc_ptr, [first, at], [BLOCK_N, BLOCK_K], tl.bfloat16), x, acc0)
+        acc1 = tl.dot(tl._experimental_descriptor_load(
+            desc_ptr, [first + BLOCK_N, at], [BLOCK_N, BLOCK_K], tl.bfloat16), x, acc1)
+        if TILES == 4:
+            acc2 = tl.dot(tl._experimental_descriptor_load(
+                desc_ptr, [first + 2 * BLOCK_N, at], [BLOCK_N, BLOCK_K], tl.bfloat16), x, acc2)
+            acc3 = tl.dot(tl._experimental_descriptor_load(
+                desc_ptr, [first + 3 * BLOCK_N, at], [BLOCK_N, BLOCK_K], tl.bfloat16), x, acc3)
+        x_ptrs += BLOCK_K
+    # acc_t[j, i] is output row i, column columns[j] + t * BLOCK_N.
+    o_ptrs = out_ptr + split * (M * N) + columns[:, None] + rows[None, :] * N
+    _store_tile(o_ptrs, acc0, row_ok, row_ok, True, EVEN_M)
+    _store_tile(o_ptrs + BLOCK_N, acc1, row_ok, row_ok, True, EVEN_M)
+    if TILES == 4:
+        _store_tile(o_ptrs + 2 * BLOCK_N, acc2, row_ok, row_ok, True, EVEN_M)
+        _store_tile(o_ptrs + 3 * BLOCK_N, acc3, row_ok, row_ok, True, EVEN_M)
 
 
 def exact_splits(k, block_k, wanted):
