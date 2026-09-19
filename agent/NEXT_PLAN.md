@@ -107,3 +107,10 @@ paired gate/up block kernel, learned ranker kernel.
 - Optional blind single-change runs when the queue is otherwise empty:
   `CUBLAS_WORKSPACE_CONFIG`/`CUBLASLT_WORKSPACE_SIZE` = 32 MiB (NVIDIA's Hopper
   recommendation; affects prefill GEMMs and 64-row verify blocks; reorder-class).
+- **Item 2 (logit re-ranking of siblings) is DEAD** - lab, 48 samples x 2
+  regimes (`~/.cache/fasty-lab/plan/logit_rerank.md`): sorting siblings by the
+  gathered logit is -0.1% at T=16; choosing draft 1 by it is HARMFUL (+1.8 to
+  +2.8% passes); the increment over the shipped stale-guess sibling straddles 0
+  at every block size. The successor table's top-8 already covers 38-40% of
+  next-next tokens vs 22% for the logits' top-8. The same run re-confirmed the
+  stale rule alone at -1.3 to -2.2% passes (48 samples).
