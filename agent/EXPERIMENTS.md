@@ -672,6 +672,13 @@ seconds per token, warmup included). Timing only; no token state crosses
 generations. Lets tree drafts (wider speed distribution) run without the 0.75
 static floor binding the median.
 
+Result (candidate 29): commit `8a7b9f5`, run
+`fe642c7b-d782-42fe-ac59-895b08bf9ef8` succeeded, ranked **1065.476** (new best).
+public-0 290.9 (TPOT 3.193; totals p10/p50/p90 109.4/110.0/117.6), public-1
+502.3 (TPOT 4.350, 32-row blocks), public-2 3173.5 (TPOT 4.225). Adaptive
+pacing is at least neutral; whether the median-based floor clamps early
+samples (the running median starts from the warmup alone) is not yet clear.
+
 ## Candidate 30 — full 9 + 7 tree for batches 1-2
 
 On top of candidates 28-29. Batch 2 becomes a 32-row block (skinny GEMM).
