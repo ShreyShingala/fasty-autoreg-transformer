@@ -6,10 +6,9 @@ All weights, matrix products, RoPE arithmetic and attention remain BF16/native.
 """
 
 import torch
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-from attention import grouped_sdpa
 from kernels.rmsnorm import rms_norm
+from layers import PackedAttention, PackedMLP
 
 
 class FusedRMSNorm(torch.nn.Module):
@@ -30,8 +29,8 @@ def optimize_model(model):
         layer.post_attention_layernorm = FusedRMSNorm(layer.post_attention_layernorm)
         layer.self_attn.q_norm = FusedRMSNorm(layer.self_attn.q_norm)
         layer.self_attn.k_norm = FusedRMSNorm(layer.self_attn.k_norm)
-    ALL_ATTENTION_FUNCTIONS.register("qwen_graph_sdpa", grouped_sdpa)
-    model.config._attn_implementation = "qwen_graph_sdpa"
+        layer.self_attn = PackedAttention(layer.self_attn)
+        layer.mlp = PackedMLP(layer.mlp)
 
 
 class KVCache:

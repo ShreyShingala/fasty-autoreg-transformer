@@ -37,6 +37,7 @@ def main():
     from attention import grouped_sdpa
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from kernels.rmsnorm import rms_norm
+    from kernels.swiglu import swiglu
 
     with torch.inference_mode():
         # Exercise real Qwen widths, BF16 cast placement and non-contiguous input.
@@ -62,6 +63,19 @@ def main():
                 assert ulps.max().item() <= 2
         print("RMSNorm BF16 parity: passed", flush=True)
 
+        for rows, width in ((1, 9728), (16, 9728), (19, 512)):
+            packed = torch.randn(rows, 2 * width, dtype=torch.bfloat16, device="cuda")
+            packed[:, :8] = torch.tensor(
+                [-100, -20, -1, 0, 1, 20, 100, 0.125], device="cuda", dtype=packed.dtype
+            )
+            packed = packed.unsqueeze(0)  # Exercise [batch, tokens, 2*I].
+            gate, up = packed.chunk(2, dim=-1)
+            expected = torch.nn.functional.silu(gate) * up
+            actual = swiglu(packed)
+            assert (actual == expected).float().mean().item() >= 0.999
+            torch.testing.assert_close(actual, expected, atol=0.015625, rtol=0.008)
+        print("SwiGLU BF16 cast parity: passed", flush=True)
+
         module = SimpleNamespace(num_key_value_groups=4)
         for batch, capacity, valid in ((1, 33, 1), (2, 65, 23), (4, 32, 32)):
             q = torch.randn(batch, 32, 1, 128, dtype=torch.bfloat16, device="cuda")
@@ -83,7 +97,7 @@ def main():
         else:
             config = Qwen3Config(
                 vocab_size=512, hidden_size=256, intermediate_size=512,
-                num_hidden_layers=2, num_attention_heads=4,
+                num_hidden_layers=2, num_attention_heads=8,
                 num_key_value_heads=2, head_dim=64, max_position_embeddings=4096,
                 rope_theta=5_000_000.0, tie_word_embeddings=True,
             )

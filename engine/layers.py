@@ -1,0 +1,64 @@
+"""Pack projections that share an input, without changing their BF16 outputs."""
+
+import torch
+from torch.nn import functional as F
+from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
+
+from attention import grouped_sdpa
+from kernels.swiglu import swiglu
+
+
+class PackedAttention(torch.nn.Module):
+    def __init__(self, reference):
+        super().__init__()
+        self.head_dim = reference.head_dim
+        self.layer_idx = reference.layer_idx
+        self.scaling = reference.scaling
+        self.is_causal = reference.is_causal
+        self.num_key_value_groups = reference.num_key_value_groups
+        self.q_width = reference.q_proj.out_features
+        self.kv_width = reference.k_proj.out_features
+        self.qkv_weight = torch.nn.Parameter(
+            torch.cat((reference.q_proj.weight, reference.k_proj.weight, reference.v_proj.weight), dim=0),
+            requires_grad=False,
+        )
+        self.q_norm = reference.q_norm
+        self.k_norm = reference.k_norm
+        self.o_proj = reference.o_proj
+        self.train(reference.training)
+
+    def forward(self, hidden_states, position_embeddings, attention_mask=None,
+                past_key_value=None, cache_position=None, **kwargs):
+        input_shape = hidden_states.shape[:-1]
+        head_shape = (*input_shape, -1, self.head_dim)
+        packed = F.linear(hidden_states, self.qkv_weight)
+        q, k, v = packed.split((self.q_width, self.kv_width, self.kv_width), dim=-1)
+        query = self.q_norm(q.reshape(head_shape)).transpose(1, 2)
+        key = self.k_norm(k.reshape(head_shape)).transpose(1, 2)
+        value = v.reshape(head_shape).transpose(1, 2)
+        cos, sin = position_embeddings
+        query, key = apply_rotary_pos_emb(query, key, cos, sin)
+        if past_key_value is not None:
+            key, value = past_key_value.update(
+                key, value, self.layer_idx,
+                {"cos": cos, "sin": sin, "cache_position": cache_position},
+            )
+        attention, _ = grouped_sdpa(
+            self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
+        )
+        return self.o_proj(attention.reshape(*input_shape, -1).contiguous()), None
+
+
+class PackedMLP(torch.nn.Module):
+    def __init__(self, reference):
+        super().__init__()
+        self.gate_up_weight = torch.nn.Parameter(
+            torch.cat((reference.gate_proj.weight, reference.up_proj.weight), dim=0),
+            requires_grad=False,
+        )
+        self.down_proj = reference.down_proj
+        self.train(reference.training)
+
+    def forward(self, hidden_states):
+        gate_up = F.linear(hidden_states, self.gate_up_weight)
+        return self.down_proj(swiglu(gate_up))

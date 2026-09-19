@@ -15,7 +15,7 @@ def report(detail: dict) -> bool:
 
     print(f"run {detail.get('id')}: {state}")
     if result.get("score") is not None:
-        print(f"score {result['score']:.1f}  (100 is native)")
+        print(f"score {result['score']:.1f} tok/s (hidden-workload geometric mean)")
 
     for shape in shapes:
         metrics = shape.get("modelMetrics") or {}

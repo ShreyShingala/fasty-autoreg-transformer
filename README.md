@@ -3,11 +3,12 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-`engine/engine.py` now uses a static BF16 KV cache, CUDA graph decode, grouped
-SDPA without KV-head duplication, and fused RMSNorm. H100 numerical correctness
-and performance are still unmeasured. See [experiment notes](agent/EXPERIMENTS.md)
-for the implementation, validation commands, and outstanding checks. The original
-baseline remains available at commit `e35c206`.
+The first optimized engine passed the official H100 benchmark at **528.6
+tokens/s** (commit `0d92f17`). It uses a static BF16 KV cache, CUDA graph decode,
+grouped SDPA without KV-head duplication, and fused RMSNorm. The next candidate
+adds packed projections and fused SwiGLU; its result is pending. See
+[experiment notes](agent/EXPERIMENTS.md) for measurements and validation commands.
+The original baseline remains available at commit `e35c206`.
 
 **Current event workflow:** the docs supplied on September 19 retire public runs
 and direct archive uploads. Validate locally, then push to the connected default
@@ -47,7 +48,8 @@ again. For CLI submissions, see [Submitting](#submitting).
 | `engine/engine.py` | yes | Model loading and streaming generation. |
 | `engine/decode.py` | yes | Static KV cache and graph capture. |
 | `engine/attention.py` | yes | Grouped single-token SDPA. |
-| `engine/kernels/` | yes | Fused BF16 RMSNorm. |
+| `engine/layers.py` | yes | Packed attention and MLP projections. |
+| `engine/kernels/` | yes | Fused BF16 RMSNorm and SwiGLU. |
 | `agent/` | no | Autoresearch loop. Runs on your machine. |
 | `bin/` | no | Installed Dryft CLI. |
 | `requirements.txt` | no | Container versions, for a local GPU. |
@@ -121,7 +123,7 @@ The CLI accepts the engine folder, `engine.py`, or an existing `.tar.gz`. To
 package by hand, run this from the starter folder:
 
 ```sh
-cd engine && tar -czf ../submission.tar.gz engine.py decode.py attention.py kernels
+cd engine && tar -czf ../submission.tar.gz engine.py decode.py attention.py layers.py kernels
 ```
 
 Name the files explicitly. `tar -C engine .` writes paths such as `./engine.py`,
