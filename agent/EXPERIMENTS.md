@@ -604,6 +604,14 @@ transferred to the platform.
 `block_tokens`: batch 1 -> 9 tokens, 2 -> 8, 3 -> 5, 4 -> 4, 5-8 -> 3 (24 rows
 through cuBLAS), 9-16 -> 2, larger -> plain. Queued behind candidate 25.
 
+Result (candidate 26): commit `607e1f5`, run
+`cb65b8a4-2bde-48e8-a0f1-8785c16f887b` succeeded, ranked **1014.469**, 2.7% below
+candidate 25. public-0 254.2 (TPOT 3.717), public-1 495.2, public-2 3104.8.
+Learned: (a) batch-one samples sit on the release pace, and the pace is a
+fraction of the measured pass time, so a costlier pass (9 tokens) is slower;
+(b) 24-row blocks at batches 5-8 leave the measured skinny GEMM (rows <= 16)
+for cuBLAS, which costs more per pass than the second draft returns.
+
 ## Candidate 27 — tree drafts: alternatives for the first draft position
 
 Block per row: [trusted token, chain drafts, alternatives to draft 1].
@@ -621,6 +629,12 @@ the candidate-25 chain. CPU checks: a line-by-line emulation of propose/settle
 with a toy model and a slot-level cache model equals sequential greedy in 300
 cases (757 alternative branches); the tree mask formulas match a reference;
 all kernels compile for `cuda:90`. Two independent reviews requested.
+
+## Candidate 28 — skinny GEMM up to 32 rows; 8-token tree blocks through batch 4
+
+`_skinny_gemm` takes `BLOCK_M` 16 or 32 and `linear` measures it against
+cuBLAS for up to 32 rows (also covers plain decode at batches 17-32). Shapes:
+batch 1-4 -> 5 chain + 3 alternatives, 5-8 -> 3 + 1, 9-16 -> 2 + 0.
 
 ## Where the remaining time is (analysis, 2026-09-19)
 

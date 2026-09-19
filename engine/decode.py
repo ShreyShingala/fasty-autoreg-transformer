@@ -20,23 +20,18 @@ from kernels import spec
 def block_shape(batch):
     """(chain tokens incl. the trusted one, alternatives to draft 1) per row, from the batch size alone.
 
-    Up to 16 rows a block still reads each weight once and costs about one
-    ordinary step; official runs showed 24-32 rows through cuBLAS still pay for
-    one or two drafts. Offline replays of the model's greedy text: with 16 rows
-    a chain of 8 plus 7 alternatives needs 19% fewer passes than a chain of 4,
-    with 8 rows 4+3 beats 7+0, with 4-5 rows one alternative beats one more
-    chain token. (1, 0) means no speculation.
+    A block of up to 32 rows runs through the measured skinny GEMM and still
+    reads each weight once, so it costs about one ordinary step. Offline replays
+    of the model's greedy text: at 8 rows per sequence a chain of 4 drafts plus
+    3 alternatives beats 7 drafts; at 4 rows, 2 drafts plus 1 alternative beat
+    3 drafts. At batch one samples sit on the release pace, which scales with
+    the pass time, so its block stays small (candidate 26 lost 2.7% with long
+    chains). (1, 0) means no speculation.
     """
-    if batch == 1:
-        return 9, 7
-    if batch == 2:
+    if batch <= 4:
         return 5, 3
-    if batch == 3:
-        return 4, 1
-    if batch == 4:
-        return 3, 1
     if batch <= 8:
-        return 3, 0
+        return 3, 1
     if batch <= 16:
         return 2, 0
     return 1, 0
@@ -191,7 +186,7 @@ class DecodeState:
         )
         if self.speculative:
             self.prepare_speculation(model, weight)
-        if batch <= 16:
+        if batch <= 32:
             # Spend the bounded tuning budget on the largest weight traffic
             # first. These are synthetic, untimed shape probes, not KV state.
             layer = model.model.layers[0]

@@ -44,12 +44,13 @@ def _skinny_gemm(
     M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    BLOCK_M: tl.constexpr = 16,
 ):
-    rows = tl.arange(0, 16)
+    rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     split = tl.program_id(1)
     reduction = tl.arange(0, BLOCK_K)
-    acc = tl.zeros((16, BLOCK_N), tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
     for start in range(split * CHUNK, (split + 1) * CHUNK, BLOCK_K):
         k = start + reduction
         x = tl.load(
@@ -96,7 +97,8 @@ def _project(x, weight, config):
     else:
         _skinny_gemm[(triton.cdiv(n, block_n), splits)](
             x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps, num_stages=2,
+            BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=16 if m <= 16 else 32,
+            num_warps=warps, num_stages=2,
         )
     if splits > 1:
         _merge_projection[(triton.cdiv(m * n, 512),)](
@@ -129,6 +131,8 @@ def _cold_graph_time(fn, flush):
     return statistics.median(times)
 
 
+#: Verify blocks of up to 32 rows still read each weight once per step.
+MAX_ROWS = 32
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
@@ -195,7 +199,7 @@ def _choose(x, weight):
 
 def linear(x, weight):
     rows = x.numel() // x.shape[-1]
-    if rows > 16 or x.dtype != torch.bfloat16 or not weight.is_contiguous():
+    if rows > MAX_ROWS or x.dtype != torch.bfloat16 or not weight.is_contiguous():
         return F.linear(x, weight)
     flat = x.reshape(rows, x.shape[-1]).contiguous()
     key = (x.device, rows, weight.shape[0], weight.shape[1])
