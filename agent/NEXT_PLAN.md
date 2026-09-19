@@ -133,3 +133,14 @@ paired gate/up block kernel, learned ranker kernel.
   today: depth-2 trees, logit re-ranking, hidden-state match selection, pair
   table, copy-logit. The draft side is exhausted for training-free methods on
   this text; remaining work is pass time, tuning coverage and warmup time.
+- **Pipelining audit (19:20 UTC, offline cuda:90 compiles):** the PTX of
+  `_exact_gemm`, `_skinny_gemm` and `_block_partials` is byte-identical for
+  num_stages 1, 2, 3 and 4: ordinary pointer loads in our K/KV loops get NO
+  asynchronous prefetch in Triton 3.1.0. The TMA kernels do (the tmah build saw
+  4 descriptor copies hoisted ahead of the loop). So on this stack async
+  prefetch = TMA descriptor loads inside an innermost loop. Static buffers that
+  can have host-built descriptors: weights (done: tma/tmah) and the KV cache
+  (`cache.store`, allocated once) -> TMA for attention K/V tiles is the next
+  kernel (published: 1.07-1.17x on attention at batch 16, ~0 at batch 1).
+  Activations live in graph-private pools whose addresses are only known at
+  capture: no descriptors for x tiles.
