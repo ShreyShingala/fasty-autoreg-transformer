@@ -1265,3 +1265,26 @@ faster than cuBLAS is used above 32 rows (no inheritance there); for batches
 tuning budget. Checks: cuda:90 compile + pointer-arithmetic replay for 48 and
 64 rows on all five shapes (0 failures), interpreter within 0.5 ulp at 48 and
 64 rows, smoke test with batch 12 and 16 (0 mismatches).
+
+Result (candidate 66 = c62 + warmup bundle): commit `da6c794` succeeded,
+**1112.9**, whole run 763 s (c57: 815 s); public 10.7/120.2/110.4 ms TTFT,
+TPOT 3.236 / 4.025 / 4.211 ms (c57: 3.038 / 4.033 / 4.320); native control
+203.6 / 193.2 ms (node ~0.6% slower than c57's) -> about -0.9% normalized.
+Reading the public cases as probes (same drafts since c57, so TPOT tracks pass
+time; batch 1 sits on the pacing floor): batch-1 pass ~3.5% slower in c62 and
+~6% slower here, batch 16 ~1.5-2.5% FASTER, batch 4 level. Fits the mask-free
+attention loops: they pay where attention is bound by K/V bytes (batch 16),
+and cost where it is bound by how many programs fit the device (batch 1: the
+two-loop kernel has 40-60% more code). Second suspect: the attention knob no
+longer refined first (c66). The warmup bundle itself did its job: -50 s of run
+time with the tuning budget back at 24 s.
+
+## Candidate 69 - mask-free prefix loop only where K/V traffic is large; attention knob first again
+
+`PREFIX` constexpr in `_block_partials` / `_decode_partials`: on when batch x
+capacity >= 6000 (batch 4 x 2086, batch 16 x 640), off at batch 1 x 560 where
+the kernel is then exactly candidate 57's (the first loop compiles away). Both
+settings proven bit-identical to the committed kernels in the interpreter (144
++ 96 cases each). Block-attention knob refined first again (1 << 41), as in
+c57. Pushed together with candidate 68 (tile GEMM for 33-64 rows: read on
+public-2); read candidate 69 on public-0 TPOT (target <= 3.04 ms).
