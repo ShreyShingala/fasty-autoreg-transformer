@@ -39,6 +39,7 @@ def main():
     from kernels.rmsnorm import add_rms_norm, rms_norm
     from kernels.swiglu import swiglu
     from kernels.qk_rope import qk_rope_cache
+    from kernels.decode_attention import decode_attention
 
     with torch.inference_mode():
         # Exercise real Qwen widths, BF16 cast placement and non-contiguous input.
@@ -135,6 +136,27 @@ def main():
             actual, _ = grouped_sdpa(module, q, k, v, mask, scaling=128**-0.5)
             torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.01)
         print("Grouped SDPA parity against repeated KV heads: passed", flush=True)
+
+        for batch, kv_heads, dim, capacity, valid in (
+            (1, 8, 128, 1, 1), (1, 8, 128, 65, 1), (1, 8, 128, 65, 33),
+            (1, 8, 128, 544, 513), (4, 8, 128, 2080, 2048),
+            (16, 8, 128, 640, 639), (2, 2, 64, 65, 65),
+        ):
+            for magnitude in (1.0, 3.0):
+                q = torch.randn(batch, kv_heads * 4, 1, dim, device="cuda", dtype=torch.bfloat16) * magnitude
+                k = torch.randn(batch, kv_heads, capacity, dim, device="cuda", dtype=torch.bfloat16) * magnitude
+                v = torch.randn_like(k)
+                mask = (torch.arange(capacity, device="cuda") < valid).view(1, 1, 1, -1)
+                expected, _ = sdpa_attention_forward(module, q, k, v, mask, scaling=dim**-0.5)
+                # Unused memory must never enter the dot product, even if it
+                # holds NaN rather than the engine's finite stale cache values.
+                k[:, :, valid:, :] = float("nan")
+                v[:, :, valid:, :] = float("nan")
+                position = torch.tensor([valid - 1], device="cuda", dtype=torch.int64)
+                actual = decode_attention(q, k, v, position, dim**-0.5)
+                assert torch.isfinite(actual).all()
+                torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.01)
+        print("Dense split-KV decode attention parity, partial/empty splits and unused NaNs: passed", flush=True)
 
         if args.model_path:
             reference = AutoModelForCausalLM.from_pretrained(

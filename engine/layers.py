@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
+from kernels.decode_attention import decode_attention
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 
@@ -41,6 +42,7 @@ class PackedAttention(torch.nn.Module):
                 packed, self.q_norm, self.k_norm, cos, sin, cache_position,
                 key, value, self.q_width // self.head_dim,
             )
+            attention = decode_attention(query, key, value, cache_position, self.scaling)
         else:
             q, k, v = packed.split((self.q_width, self.kv_width, self.kv_width), dim=-1)
             query = self.q_norm(q.reshape(head_shape)).transpose(1, 2)
@@ -52,9 +54,9 @@ class PackedAttention(torch.nn.Module):
                     key, value, self.layer_idx,
                     {"cos": cos, "sin": sin, "cache_position": cache_position},
                 )
-        attention, _ = grouped_sdpa(
-            self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
-        )
+            attention, _ = grouped_sdpa(
+                self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
+            )
         return self.o_proj(attention.reshape(*input_shape, -1).contiguous()), None
 
 

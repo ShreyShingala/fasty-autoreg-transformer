@@ -1,8 +1,8 @@
 """Native Qwen layers with graph-stable decode storage.
 
-Prefill exposes only the freshly written prompt to causal SDPA. Decode exposes
-the full cache capacity and supplies an explicit mask based on a GPU position.
-All weights, matrix products, RoPE arithmetic and attention remain BF16/native.
+Prefill exposes only the freshly written prompt to causal SDPA. Dense Triton
+decode attention reads the valid prefix using a GPU position. Weights and KV
+storage remain BF16; fused pointwise operations preserve native cast boundaries.
 """
 
 import torch
@@ -38,7 +38,8 @@ class KVCache:
 
     Only decoder layers see this object; the generic Transformers model/cache
     dispatcher is bypassed. ``update`` returns prompt-sized inputs in prefill
-    mode, full persistent buffers in decode mode. The latter requires a mask.
+    mode, full persistent buffers in decode mode. Decode attention must restrict
+    reads to the prefix ending at the device-side position.
     """
 
     def __init__(self, config, batch, capacity, device, dtype):
@@ -46,8 +47,8 @@ class KVCache:
         if head_dim is None:
             head_dim = config.hidden_size // config.num_attention_heads
         shape = (batch, config.num_key_value_heads, capacity, head_dim)
-        # Masked SDPA can still load unused slots. Initialize them to finite
-        # values: multiplying masked weights by uninitialized NaNs is unsafe.
+        # Capture warmup runs before the first prefill. Keep its synthetic
+        # prefix finite; real generation subsequently overwrites that prefix.
         self.keys = [
             torch.zeros(shape, dtype=dtype, device=device)
             for _ in range(config.num_hidden_layers)
@@ -70,7 +71,7 @@ class KVCache:
 
 
 def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
-    """Full unpadded prefill, or one masked decode token; return last logits."""
+    """Full unpadded prefill, or one decode token; return last logits."""
     base = model.model
     hidden = base.embed_tokens(token_ids)
     residual = None
@@ -136,9 +137,8 @@ class DecodeState:
             self.cos.index_select(1, self.position),
             self.sin.index_select(1, self.position),
         )
-        mask = (self.positions <= self.position).view(1, 1, 1, self.capacity)
         logits = forward_last(
-            self.model, self.token_ids, self.cache, self.position, rope, mask
+            self.model, self.token_ids, self.cache, self.position, rope
         )
         self.token_ids.copy_(logits.argmax(dim=-1, keepdim=True))
         self.position.add_(1)
@@ -179,5 +179,5 @@ class DecodeState:
         self.token_ids.copy_(logits.argmax(dim=-1, keepdim=True))
         self.position.fill_(length)
         # Every prompt slot was overwritten. Old continuation slots remain
-        # inaccessible until rewritten: decode masks j > position on every
+        # inaccessible until rewritten: decode excludes j > position on every
         # replay, including the first replay after warmup or another sample.

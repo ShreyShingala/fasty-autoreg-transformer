@@ -132,8 +132,50 @@ blocking residual-order, aliasing, cast or graph issues. CPU protocol tests and
 archive checks cannot prove GPU parity; the next official run supplies that
 evidence. Candidate 3 remains the measured fallback.
 
+Result: commit `fb686a3` passed official run
+`812257c5-75a4-4395-92ae-e162458e5e07`, ranked **644.645 tokens/s**, up **3.28%**.
+Public TPOT was 5.592/8.144/5.979 ms; TTFT was 25.827/161.496/149.761 ms.
+All gates passed; peak GPU memory remained 15.123 GiB. This is the new measured
+fallback for candidate 5. The run continued successfully across the API upgrade.
+
 Pinned implementation references:
 
 - [Qwen3 4.51.3](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/qwen3/modeling_qwen3.py)
 - [SDPA adapter 4.51.3](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/integrations/sdpa_attention.py)
 - [CUDA graph API 2.5.1](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/cuda/graphs.py)
+
+## Candidate 5 — dense Triton decode attention with split-KV
+
+Replace masked, full-capacity grouped SDPA only during single-token decode.
+Each program handles one KV head's group of query heads and a disjoint interval
+of the valid cache. It reads the length from the graph's GPU position tensor,
+performs online softmax with FP32 scores/normalizers/accumulators and BF16 matrix
+operands, then writes FP32 partial results. A second kernel combines partials
+using their maxima and denominators and stores the BF16 attention output.
+Prefill remains native causal SDPA, and projections remain native BF16 linear.
+
+The split policy uses batch/head count and capacity only, aiming to expose
+enough independent work for small batches. No token-content heuristics, cache
+eviction, sparse attention or vocabulary pruning. All valid keys and values
+participate. Partial intervals are masked before loads; entirely empty splits
+contribute zero. CUDA graph replay updates the length without a host read.
+
+Read-only Claude review found no concrete compilation or indexing blocker.
+The GPU verification script covers non-power-of-two capacities, first/last
+positions, empty splits, large attention scores and NaNs in unused slots. It
+requires CUDA and has not been run on this Mac. Official replay and timing are
+required before claiming correctness or a speedup.
+
+Algorithm reference: [Triton 3.1.0 fused-attention tutorial](https://github.com/triton-lang/triton/blob/v3.1.0/python/tutorials/06-fused-attention.py).
+This implementation adapts the online-softmax approach to GQA decode and merges
+disjoint KV intervals; it does not require newer Triton descriptor APIs.
+
+## September 19 backend migration
+
+Reinstalled the official CLI through the upstream starter installer, including
+its SHA256 verification. The advertised version remains 0.1.0. Its embedded old
+Azure API origin returned HTTP 403 after the migration. The documented public
+origin `https://htn.dryft.ai` successfully routes to the upgraded backend:
+`dryft doctor` reported authentication OK, matching archive limits, no warnings.
+Saved that origin in the ignored local `.env`; retained the token privately.
+Recovered the existing candidate-4 run without creating a duplicate.

@@ -3,11 +3,11 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-The latest measured engine passed the official H100 benchmark at **624.2
-tokens/s** (commit `1799644`), up from **528.6** at `0d92f17`. It uses a static
+The latest measured engine passed the official H100 benchmark at **644.6
+tokens/s** (commit `fb686a3`), up from **528.6** at `0d92f17`. It uses a static
 BF16 KV cache, CUDA graph decode, grouped SDPA, fused RMSNorm, packed projections,
-fused SwiGLU, and fused decode Q/K norm, RoPE and cache writes.
-The next candidate fuses residual additions into RMSNorm;
+fused SwiGLU, fused residual additions, and fused decode Q/K norm, RoPE and cache writes.
+The next candidate replaces masked decode SDPA with dense Triton attention;
 its result is pending. See
 [experiment notes](agent/EXPERIMENTS.md) for measurements and validation commands.
 The original baseline remains available at commit `e35c206`.
@@ -51,7 +51,7 @@ again. For CLI submissions, see [Submitting](#submitting).
 | `engine/decode.py` | yes | Static KV cache and graph capture. |
 | `engine/attention.py` | yes | Grouped single-token SDPA. |
 | `engine/layers.py` | yes | Packed attention and MLP projections. |
-| `engine/kernels/` | yes | Fused BF16 RMSNorm and SwiGLU. |
+| `engine/kernels/` | yes | Fused BF16 norms, SwiGLU, RoPE/cache writes and dense decode attention. |
 | `agent/` | no | Autoresearch loop. Runs on your machine. |
 | `bin/` | no | Installed Dryft CLI. |
 | `requirements.txt` | no | Container versions, for a local GPU. |
@@ -100,6 +100,7 @@ then:
 
 ```sh
 export DRYFT_TOKEN='dryft_pat_...'
+export DRYFT_API='https://htn.dryft.ai'
 
 ./bin/dryft doctor
 ./bin/dryft validate engine
@@ -110,8 +111,10 @@ git push origin HEAD
 
 The push creates a submission and, when Auto-run is enabled, starts an official
 run. Copy the submission ID from Dryft to rerun it with
-`./bin/dryft run <submission-id> --mode official --wait 3000`. The CLI already
-knows the event server. Set `DRYFT_API` only for a different deployment.
+`./bin/dryft run <submission-id> --mode official --wait 3000`. The official site
+routes this API origin to the current event backend. The September 19 migration
+disabled the older Azure origin embedded in some 0.1.0 CLI downloads; the public
+event origin avoids that stale default.
 
 ```sh
 ./bin/dryft submissions                  # latest 25 submissions
