@@ -1584,3 +1584,24 @@ batch 16) is REVERTED - it is the only part that changes which kernel runs on
 hidden shapes and it adds warmup to exactly those workloads. Candidate 87 (the
 pacing floor's pass time = fastest of five back-to-back groups) stays: it only
 changes a measurement, and c88 (measuring) already carries both.
+
+Result (candidate 88, embedding gather fused into the first norm, on the
+c86+87 base): commit `92386d2` succeeded, **1118.7** (normalized 1114.8), 663 s
+- level with its parent (1117.3), so the fusion is neutral on its own and the
+c86 regression is still inside it. Candidate 90 (`6d93ee0`, c86 reverted +
+numpy views + deeper queue) is the test that the 1135 level returns.
+
+Dead offline, no run spent: **alignment hints** (`tl.max_contiguous` /
+`tl.multiple_of`) change NOTHING in the PTX of the small fused kernels (still
+64 scalar `ld.global` in RMSNorm, zero `.v2`/`.v4` in every variant), and a
+mask-free chunked rewrite reads each row twice - worse for a bandwidth-bound
+kernel. Triton 3.1 does not vectorise these BF16 masked loads at all.
+
+## Candidate 91 - warp-width knobs for 17-64-row blocks and the embedding norm
+
+`add_rms_norm` and `swiglu` only offered their launch-width knob at <= 16 rows;
+verify blocks run 16-64 rows (batch 4 x 8, batch 16 x 4), where they are the
+two most-launched kernels (72 + 36 per pass). The knob now covers <= 64 rows,
+and the new embedding+norm kernel gets one too. Same kernel, same values, the
+captured pass decides. Interpreter: 13 PASS across the touched kernels; smoke
+test 0 mismatches.
