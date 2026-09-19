@@ -1874,3 +1874,25 @@ sites): **normalized 1143.6 against the base's 1143.7 - exactly neutral**, and
 676 s so it cost no cap headroom either. The PTX does change (26/39/51
 `cp.async` for stages 2/3/4), so this is a real measurement of a real
 difference, and the difference is worth nothing. Deeper pipelining is closed.
+
+## Candidate 104 - give each refine knob its share of the warmup budget
+
+`refine` raced every knob against one deadline. Knobs come weight-ordered and
+the heavy ones are first precisely because their options recompile a kernel,
+so the head of the list spent the whole budget. Replaying the arithmetic
+against realistic option costs (block_attention ~2.4 s an option, the
+projections ~1.1 s, the launch widths ~0.4 s, 16 s of budget): **3 of 11 knobs
+judged at batch 1**, and the compile-free tail - `fused_argmax` and the four
+launch widths - never judged on any workload. Two independent reviews reached
+this separately.
+
+Each knob now takes the remaining time over the knobs left; an option already
+started runs to the end, so every knob gets at least one trial and unused time
+rolls forward. The same replay judges 11 of 11 in 14.6 s rather than 16.2 s.
+The cost is that `block_attention` drops from 4 trials to 1 - acceptable, its
+options at batch 1 are all fewer-program layouts.
+
+Exactness class none: refine only picks among options that already passed the
+operator checks, and the graph is fixed before any measured sample.
+Dispatched to Silver Bullet as `aa472ef`. Gates: unit tests, `archive ok
+46060 bytes`, `SMOKE OK 81s`.
