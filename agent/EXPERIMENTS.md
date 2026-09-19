@@ -1288,3 +1288,14 @@ settings proven bit-identical to the committed kernels in the interpreter (144
 + 96 cases each). Block-attention knob refined first again (1 << 41), as in
 c57. Pushed together with candidate 68 (tile GEMM for 33-64 rows: read on
 public-2); read candidate 69 on public-0 TPOT (target <= 3.04 ms).
+
+## Candidate 70 - pass time measured back to back (held)
+
+The pacing floor is 0.70 x `pass_seconds`, and at batch 1 the median sample
+sits on it. `pass_seconds` was the median of 12 replays, each followed by a
+synchronize, so every reading carried one graph-launch + wake-up latency that
+passes queued back to back never pay. Now: three readings of four back-to-back
+replays. Expected: floor lower by the launch latency's share of a ~4.3 ms pass
+(1-2%), i.e. that much more batch-1 speed on floor-bound samples; steadier
+inputs for refine/choose_block. Spread risk: the floor was calibrated in the
+simulator in units of TRUE pass time, which this now is.

@@ -367,16 +367,21 @@ class DecodeState:
         with torch.cuda.graph(self.spec_graph, stream=stream):
             self.speculate()
         current.wait_stream(stream)
-        # The pass time sets the release pace that bounds sample-to-sample spread.
+        # The pass time sets the release pace that bounds sample-to-sample
+        # spread. Passes run back to back in a generation, so they are timed
+        # back to back: four per reading, without the launch and wake-up
+        # latency that a synchronize after every replay adds to each one.
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         times = []
-        for _ in range(12):
+        for _ in range(3):
             self.row_position.fill_(self.shape[1])
+            torch.cuda.synchronize(self.device)
             start.record()
-            self.spec_graph.replay()
+            for _ in range(4):
+                self.spec_graph.replay()
             end.record()
             end.synchronize()
-            times.append(start.elapsed_time(end))
+            times.append(start.elapsed_time(end) / 4)
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
         self.stale.fill_(-1)
