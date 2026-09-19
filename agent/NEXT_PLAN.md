@@ -114,3 +114,12 @@ paired gate/up block kernel, learned ranker kernel.
   at every block size. The successor table's top-8 already covers 38-40% of
   next-next tokens vs 22% for the logits' top-8. The same run re-confirmed the
   stale rule alone at -1.3 to -2.2% passes (48 samples).
+- **Item 5 (hidden-state similarity for the copy source, PLD+) is DEAD** - lab,
+  120 samples (`~/.cache/fasty-lab/plan/hidden_match.md`): the implementable
+  variant saves 0.3-0.7% of passes at T=16 and 0.25% at T=4 (bar 3% / 2%). Even
+  a PERFECT source selector saves only 2.8-5.1%: in 70-75% of the passes with a
+  match of <= 1 token, NO earlier occurrence is followed by the right token.
+  Conclusion: history-copy drafting is at its ceiling on this text; what is
+  left on the acceptance side is a better context-aware predictor for no-match
+  passes, which without trained weights we do not have. Remaining work is
+  pass time (fusion kernel, attention prefix loop) and prefill (cuDNN).
