@@ -87,3 +87,23 @@ paired gate/up block kernel, learned ranker kernel.
   offline compile script for any new kernel/constexpr combination.
 - Keep exactly one run measuring and at most one queued; hold the rest locally.
 - A change under ~1.5% needs a second run or a public-case signal before `keep`.
+
+## Updates after review (17:20 UTC)
+
+- **Item 1 (depth-2 tree for no-match rows) is DEAD** - lab, 3 regimes, paired
+  bootstrap (`~/.cache/fasty-lab/plan/depth2_tree.md`): best shape saves
+  1.2-1.4% of passes at T=16 (bar: 4%) and every fixed child shape LOSES 2.7%
+  at T=4. A child is right only 17% (table) / 35% (history) of the time when
+  its sibling hits; ~40% would be needed. Do not build the parent-pointer kernel.
+- **Codex review**: at batch 1 the median sample sits on the pacing floor
+  (0.70 x pass time), so pass-TIME cuts convert ~1:1 while fewer passes barely
+  show; acceptance work pays at batch >= 4. Item 3 (fused QK-norm/RoPE/KV-write
+  block kernel) is now first; a subagent is building it in a worktree.
+  Item 2 only makes sense where candidates exceed lanes (T=4/8) or when it
+  changes draft 1: the running lab test measures exactly that increment over c55.
+- c56 (batches 17-64) deferred: expected gain ~0 with conservative acceptance.
+- c53 = 1097.7 (new best, 817 s). c54 (argmax + trimmed budgets) measuring;
+  c57 (stale sibling + cuDNN prefill + frozen GC) queued.
+- Optional blind single-change runs when the queue is otherwise empty:
+  `CUBLAS_WORKSPACE_CONFIG`/`CUBLASLT_WORKSPACE_SIZE` = 32 MiB (NVIDIA's Hopper
+  recommendation; affects prefill GEMMs and 64-row verify blocks; reorder-class).
