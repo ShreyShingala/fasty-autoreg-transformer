@@ -1833,3 +1833,44 @@ tensor and built a Python scalar on every spin. A `.numpy()` view made once
 turns that into a memory read. Codex measured this inside a four-change stack
 (1136.7 normalized); here it is alone on the 1144.3 base. Cannot change a
 token: the stamp still gates the read, and the value compared is the same.
+
+Result (candidate 101, the byte-exact 1144.3 tree, `97d43d2`): **1053.1 raw,
+and the run is unreadable** — the node was degraded. Native's own prefill TTFT
+came back 263.6 / 251.2 ms against the 202.3 / 192.0 ms of the calibration
+node, and our public-1/2 TTFT rose with it (164.9 / 158.6 against a usual
+118 / 107). The normalizer reports 1374.9, which is an extrapolation far
+outside the +/-1% band it was fitted on; it is not a reading. The only sound
+conclusion is that `engine/` at `c758faf` is unchanged and the leaderboard
+best (best-of, 1144.3) is untouched.
+
+**New rule from this run: check `referenceTtftMs` before believing a score.**
+A run whose reference TTFT is more than ~5% off 202.3 / 192.0 is measuring the
+node, not the change, and the slot has to be spent again.
+
+## Candidate 103 - aim split-K at bytes in flight, not at filling the machine
+
+`linear.py:355` sized the split count to reach 512 programs. Nothing ever
+measured that constant: `_choose` searches *kind* and *block_n* only, and the
+split count rides along. At 16 rows the four projections write and read 594.5
+MB of FP32 partials a pass because of it. The launch only has to keep the bus
+busy - 3.352 TB/s over a ~600 ns load-to-use is ~2 MB resident, about 123 CTAs
+of a 16 KB staged tile - so the target drops to 128: qkv 8->2 splits (192
+CTAs), o/down 8->4 (160), gate_up 2->1 (304, with no partials and no merge
+launch at all). Partial traffic 594.5 -> 151.0 MB, a 443.5 MB saving worth
+0.13 ms of bus time, ~3.3% of a 4.0 ms pass.
+
+Residency was checked offline first and is not the constraint it looked like:
+compiled for cuda:90 and read back with `cuobjdump -res-usage`, `_skinny_gemm`
+is 64 registers over 128 threads against 20 KB of shared memory, so registers
+bind first at 8 CTAs/SM = 1056 slots. None of the per-layer grids wave at
+either the old or the new split count. (`lm_head` at 2374 CTAs is the one
+GEMM that does wave, 3 deep - a separate item.)
+
+Dispatched to dryfter as `9a68694`. Gates: unit tests, 118/118 interpreter
+kernels, offline cuda:90 compile, whole-engine smoke.
+
+Result (dryfter `7928148`, `num_stages` 2->3 on all six tile-GEMM launch
+sites): **normalized 1143.6 against the base's 1143.7 - exactly neutral**, and
+676 s so it cost no cap headroom either. The PTX does change (26/39/51
+`cp.async` for stages 2/3/4), so this is a real measurement of a real
+difference, and the difference is worth nothing. Deeper pipelining is closed.
