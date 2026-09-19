@@ -7,7 +7,7 @@ All weights, matrix products, RoPE arithmetic and attention remain BF16/native.
 
 import torch
 
-from kernels.rmsnorm import rms_norm
+from kernels.rmsnorm import add_rms_norm, rms_norm
 from layers import PackedAttention, PackedMLP
 
 
@@ -73,9 +73,20 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
     """Full unpadded prefill, or one masked decode token; return last logits."""
     base = model.model
     hidden = base.embed_tokens(token_ids)
+    residual = None
     for layer in base.layers:
-        hidden = layer(
-            hidden,
+        if residual is None:
+            residual = hidden
+            normalized = layer.input_layernorm(hidden)
+        else:
+            # Complete the previous layer's MLP residual in the next layer's
+            # input norm. The stored sum rounds to BF16 before normalization.
+            normalized, residual = add_rms_norm(
+                hidden, residual, layer.input_layernorm.weight,
+                layer.input_layernorm.variance_epsilon,
+            )
+        attention = layer.self_attn(
+            normalized,
             attention_mask=attention_mask,
             position_ids=position.unsqueeze(0),
             past_key_value=cache,
@@ -83,8 +94,17 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
             cache_position=position,
             position_embeddings=rope,
         )[0]
+        normalized, residual = add_rms_norm(
+            attention, residual, layer.post_attention_layernorm.weight,
+            layer.post_attention_layernorm.variance_epsilon,
+        )
+        hidden = layer.mlp(normalized)
     # RMSNorm acts independently on each token; earlier final states are unused.
-    return model.lm_head(base.norm(hidden[:, -1:, :]))[:, 0, :]
+    normalized, _ = add_rms_norm(
+        hidden[:, -1:, :], residual[:, -1:, :],
+        base.norm.weight, base.norm.variance_epsilon,
+    )
+    return model.lm_head(normalized)[:, 0, :]
 
 
 class DecodeState:

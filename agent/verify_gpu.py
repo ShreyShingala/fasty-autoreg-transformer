@@ -36,7 +36,7 @@ def main():
     from decode import optimize_model
     from attention import grouped_sdpa
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
-    from kernels.rmsnorm import rms_norm
+    from kernels.rmsnorm import add_rms_norm, rms_norm
     from kernels.swiglu import swiglu
     from kernels.qk_rope import qk_rope_cache
 
@@ -63,6 +63,22 @@ def main():
                 ulps = (actual.contiguous().view(torch.int16).int() - expected.contiguous().view(torch.int16).int()).abs()
                 assert ulps.max().item() <= 2
         print("RMSNorm BF16 parity: passed", flush=True)
+
+        for rows, width, tokens in ((1, 2560, 1), (16, 2560, 1), (31, 256, 1), (2, 2560, 7)):
+            x = torch.randn(rows, tokens, width, device="cuda", dtype=torch.bfloat16)[:, -1:, :]
+            residual = torch.randn_like(x)
+            original_x, original_residual = x.clone(), residual.clone()
+            norm = Qwen3RMSNorm(width, eps=1e-6).to(device="cuda", dtype=torch.bfloat16)
+            norm.weight.copy_(torch.randn_like(norm.weight))
+            expected_sum = x + residual
+            expected = norm(expected_sum)
+            actual, actual_sum = add_rms_norm(x, residual, norm.weight, norm.variance_epsilon)
+            assert actual.shape == x.shape
+            assert torch.equal(x, original_x) and torch.equal(residual, original_residual)
+            assert torch.equal(actual_sum, expected_sum)
+            assert (actual == expected).float().mean().item() >= 0.999
+            torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.008)
+        print("Fused residual-add + RMSNorm parity: passed", flush=True)
 
         for rows, width in ((1, 9728), (16, 9728), (19, 512)):
             packed = torch.randn(rows, 2 * width, dtype=torch.bfloat16, device="cuda")

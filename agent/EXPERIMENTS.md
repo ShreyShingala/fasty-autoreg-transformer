@@ -111,6 +111,27 @@ two cache index-copy kernels with one launch per layer, improving TPOT without
 changing prefill. Risks: head/stride/cache indexing and compiler cast behavior.
 Candidate 2 is the known passing fallback.
 
+Result: commit `1799644` passed official run
+`59987926-4597-4a46-aee2-54a2036afec5`, ranked **624.197 tokens/s**, up **15.24%**.
+Public TPOT was 5.836/8.327/6.245 ms; TTFT was 22.129/163.551/152.504 ms.
+All correctness, latency, memory and stability gates passed. Peak GPU memory
+was 15.123 GiB. Native timings again varied, so use the score as observed
+performance rather than claiming a controlled causal speedup.
+
+## Candidate 4 — fuse residual additions into RMSNorm
+
+Starting from candidate 3, combine each attention residual with its following
+post-attention norm. Defer each MLP residual until the next layer's input norm,
+or the final last-token norm. The kernel stores the BF16 residual sum and its
+normalized output; it rounds the sum before FP32 variance accumulation, and
+rounds normalized activations before multiplying by the learned gain.
+
+This removes 72 separate residual-add launches per decode step. The same
+row-independent fusion applies to prefill. Read-only Claude review found no
+blocking residual-order, aliasing, cast or graph issues. CPU protocol tests and
+archive checks cannot prove GPU parity; the next official run supplies that
+evidence. Candidate 3 remains the measured fallback.
+
 Pinned implementation references:
 
 - [Qwen3 4.51.3](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/qwen3/modeling_qwen3.py)

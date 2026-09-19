@@ -3,10 +3,11 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-The latest measured engine passed the official H100 benchmark at **541.6
-tokens/s** (commit `a339a7f`), up from **528.6** at `0d92f17`. It uses a static
+The latest measured engine passed the official H100 benchmark at **624.2
+tokens/s** (commit `1799644`), up from **528.6** at `0d92f17`. It uses a static
 BF16 KV cache, CUDA graph decode, grouped SDPA, fused RMSNorm, packed projections,
-and fused SwiGLU. The next candidate fuses decode Q/K norm, RoPE and cache writes;
+fused SwiGLU, and fused decode Q/K norm, RoPE and cache writes.
+The next candidate fuses residual additions into RMSNorm;
 its result is pending. See
 [experiment notes](agent/EXPERIMENTS.md) for measurements and validation commands.
 The original baseline remains available at commit `e35c206`.
