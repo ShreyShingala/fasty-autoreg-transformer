@@ -1550,3 +1550,12 @@ same cast placement as `_rms_norm_kernel`. Prefill keeps the native path.
 Interpreter: the residual equals table[ids] and the normalized output equals
 rms_norm(table[ids]) bit for bit; cuda:90 compile; smoke test 0 mismatches
 (344 launches). One launch and one [rows, 2560] read fewer per pass.
+
+Result (candidate 85 = c82 with PDL OFF + pinned-memory completion stamps +
+in-place RoPE tables): commit `53e4a7a` succeeded, **1140.0 - NEW BEST, #1**
+(normalized 1135.3, node 0.4% fast; the c67-class plateau was 1125-1127), and
+the fastest run yet at **648 s**. Public TPOT 2.853 / 3.810 / 4.082 ms - the
+best batch-1 ever measured (c67: 2.994) and the second-best batch-16. Keep.
+Reading: PDL off (-13% batch-1 penalty gone) + three fewer launches per pass
+(RoPE tables) + no trapped event ioctls per pass (mailbox) + the fused
+lm_head/argmax knob. Small, verified, stacked wins are what moves this engine.
