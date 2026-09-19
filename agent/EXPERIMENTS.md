@@ -1755,3 +1755,12 @@ per SM; the pipeline goes from 27 to 39 `cp.async` groups. Numerically
 identical - `num_stages` only schedules the copies. Checks: every offline
 compile script (0 failures, TMA/tmap structure assertions updated for the
 corrected harness), interpreter suite, smoke test, unit tests.
+
+## Candidate 97 - skip a deeper-pipeline variant whose base kind lost to cuBLAS
+
+`_choose` compiles and times every candidate in the list. `tmap3` is `tmap`
+with one more prefetch stage; if `tmap` was already slower than cuBLAS at that
+shape, the deeper one cannot win it back, and its compile is pure cost against
+the 900 s run limit that six workloads share (runs have varied 692-833 s for
+near-identical trees). One compile saved per losing shape, up to ~5 shapes x 6
+workloads. Purely a warmup economy: nothing about the chosen layout changes.

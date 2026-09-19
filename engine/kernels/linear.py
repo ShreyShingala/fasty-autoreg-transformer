@@ -471,14 +471,23 @@ def _choose(x, weight, split_ok=False):
     best_ms, best = native_ms, None
     validated = [(native_ms, None)]
     _VALIDATED[(x.device, m, n, k)] = validated
+    timed = {}
     for config in configs:
         if time.monotonic() >= shape_deadline:
             break
+        # A deeper-pipeline variant of a kind that already lost to cuBLAS at
+        # this shape cannot win it back: skip its compile. Warmup compile time
+        # is the binding constraint on the whole run (six workloads share the
+        # 900 s limit), so a candidate that cannot win is pure cost.
+        base = config[0][:-1] if config[0].endswith("3") else None
+        if base is not None and timed.get(base, 0.0) > native_ms:
+            continue
         # Reject a kernel that fails an operator sanity check. Full-model
         # correctness still comes from the platform's own-prefix replay.
         if not _agrees(probe, weight, config, reference):
             continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config, split_ok), flush)
+        timed[config[0]] = elapsed
         validated.append((elapsed, config))
         if elapsed < best_ms * 0.985:
             best_ms, best = elapsed, config
