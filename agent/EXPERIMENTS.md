@@ -782,6 +782,12 @@ on the lab's proxy corpora, so the platform text is harder), public-1 523.9
 
 ## Candidate 39 — cuBLASLt trial (was "candidate 31")
 
+Lab note: appending a draft chain to the prefill (a free first verify pass)
+would gain 0.57 tokens per generation at prompt 512 and 0.76 at prompt 2048 on
+the proxy corpora (P(at least one) about 0.26): roughly 1.5% at batch one with
+32 outputs, a few tenths of a percent once the slowest row gates a batch. Not
+worth the prefill-graph surgery.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
