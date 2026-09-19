@@ -826,6 +826,16 @@ cuBLASLt trial. TunableOp, `_addmm_activation`, stream priorities: nothing.
 
 ## Candidate 41 — four tokens per row at batches 9-16 (short prompts, cuBLAS rows)
 
+## Candidate 42 — consumers read split-GEMM partials directly (no merge launch)
+
+In verify blocks `linear(..., split_ok=True)` may return `Split` (the FP32
+partials [S, M, N]); residual-add RMSNorm, SwiGLU and the fused Q/K kernel sum
+the partials and round to BF16 at load time (`kernels/merged.py`), which is
+what `_merge_projection` did, so arithmetic is unchanged up to the FP32 order
+of at most 8 addends. Removes up to four launches per layer (144 per pass)
+wherever the split skinny GEMM is the selected layout; `refine` now judges the
+cheaper GEMM in the real graph. Kernels compile for `cuda:90` with SPLITS 1/2/8.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
