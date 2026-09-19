@@ -1949,3 +1949,31 @@ move is gate_up, 2 -> 4 splits, which takes it from 608 CTAs (one wave of the
 The general lesson, which applies to the whole 30-item inventory: an item
 priced purely in bytes, with no account of how many CTAs are concurrently
 streaming, is not costed. Three items on that list are priced that way.
+
+## Dead offline, no slot spent - 8 warps on the tile GEMMs
+
+Candidate 103 said the GEMMs are limited by concurrent streaming, not bytes,
+so the obvious follow-up was more warps per CTA rather than more CTAs. Compiled
+for cuda:90 both ways (`agent/local_cpu/compile_warps.py`):
+
+| shape | m | warps | regs | CTA/SM | slots | waves | warps/SM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| qkv | 16 | 4 | 64 | 8 | 1056 | 1 | 32 |
+| qkv | 16 | 8 | 55 | 4 | 528 | **2** | 32 |
+| gate_up | 16 | 8 | 55 | 4 | 528 | **2** | 32 |
+
+Doubling the warps halves the CTAs per SM, so the resident warp count - the
+thing that actually hides latency - is **identical at 32**, and the halved slot
+count puts qkv (768 CTAs) and gate_up (608) into two waves. Strictly worse.
+At 32 rows it is 32 warps/SM against 24, but with the same two waves. Killed.
+
+## Dead, not worth a rebase - the parked fused QK/RoPE/attention kernel
+
+`85b43bb` (`engine/kernels/block_fused.py`) does not rebase onto the 1144.3
+tree: it predates both the TMA-attention subsystem in `decode_attention.py` and
+the removal of `gated_linear`, and it predates `qk_rope_cache` gaining its
+`rows`/`phases` arguments. Its own commit message also limits it to
+single-interval layouts ("split layouts keep the two-kernel path"), and it was
+parked on compile time against a 900 s cap. Cherry-pick attempted and aborted;
+the tree is clean. Revisit only with a fresh implementation against the current
+attention path, not by rebasing this commit.
