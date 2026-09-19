@@ -98,10 +98,10 @@ def install():
 
 
 @triton.jit
-def _produce(out_ptr, value, COUNT: tl.constexpr):
+def _produce(out_ptr, value_ptr, COUNT: tl.constexpr):
     wait()
     offsets = tl.arange(0, COUNT)
-    tl.store(out_ptr + offsets, value + offsets)
+    tl.store(out_ptr + offsets, tl.load(value_ptr) + offsets)
 
 
 @triton.jit
