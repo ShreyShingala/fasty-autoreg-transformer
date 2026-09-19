@@ -1559,3 +1559,18 @@ best batch-1 ever measured (c67: 2.994) and the second-best batch-16. Keep.
 Reading: PDL off (-13% batch-1 penalty gone) + three fewer launches per pass
 (RoPE tables) + no trapped event ioctls per pass (mailbox) + the fused
 lm_head/argmax knob. Small, verified, stacked wins are what moves this engine.
+
+Merged-team read-out (leaderboard is the only visible signal for the other two
+teams): **Silver Bullet 1112.7 -> 1137.7** after the candidate-85 tree was
+pushed there (`c3120ff`). Two independent draws of that engine now exist,
+1140.0 and 1137.7, so candidate 85 is a real level, not a lucky draw. dryfter
+still shows 1123.9: their candidate-86 run either has not finished or did not
+beat their previous best.
+
+## Candidate 89 - pinned buffers read through numpy views; a deeper pass queue above batch 2
+
+`host_passes` / `host_tokens` are read through `.numpy()` views made once, so
+a pass read is a memory access rather than a torch call building Python lists
+per row. `SPEC_LOOKAHEAD_WIDE = 3` for batches above 2 (the release pace binds
+only at batch 1-2; above that the queue exists only to keep the GPU from
+waiting on the host between passes). Read-out: public-2 TPOT.
