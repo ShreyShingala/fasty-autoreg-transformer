@@ -181,11 +181,11 @@ def _candidates(m, n, k):
 def _agrees(probe, weight, config, reference):
     """Operator sanity check; a layout that fails to compile or launch is simply not offered."""
     try:
-        actual = _project(probe, weight, config)
+        actual = _project(probe, weight, config).float()
+        return bool(((actual - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
     except Exception as error:
         print(f"BF16 projection layout {config} skipped: {error!r}", flush=True)
         return False
-    return bool(((actual.float() - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
 
 
 def _inherit(x, weight):
