@@ -1764,3 +1764,17 @@ shape, the deeper one cannot win it back, and its compile is pure cost against
 the 900 s run limit that six workloads share (runs have varied 692-833 s for
 near-identical trees). One compile saved per losing shape, up to ~5 shapes x 6
 workloads. Purely a warmup economy: nothing about the chosen layout changes.
+
+Result (candidate 96, three-deep pipeline): commit `a3696f5` **CANCELED at
+919 s** of the 900 s limit; `5d61f22` before it was canceled at 915 s. Run time
+across near-identical trees has run 692 / 700 / 773 / 915 / 919 s, so the
+engine now sits ON the cap and the node's compile speed decides whether a run
+finishes at all. `DEEP_STAGES` back to 2 (its benefit was never measured -
+the run died in warmup).
+
+## Candidate 98 - cut warmup back under the cap
+
+`DEEP_STAGES` 3 -> 2, `_PROCESS_SECONDS` 28 -> 22, refine 16 -> 12 s, plus
+candidate 97's skip of a deeper-pipeline candidate whose base kind already lost
+to cuBLAS. Target: back to ~700 s with margin for a slow node. Read-out:
+duration first - a finished run is worth more than any layout.

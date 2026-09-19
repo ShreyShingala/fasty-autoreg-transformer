@@ -520,7 +520,7 @@ class DecodeState:
         # where layouts are judged inside the real graph.
         # 24 s here took a run to 833 s of the 900 s limit and cost 2.9%:
         # compile time is the binding constraint, not refinement coverage.
-        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
+        seconds = 12.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:

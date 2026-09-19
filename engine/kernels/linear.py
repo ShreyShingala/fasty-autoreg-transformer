@@ -177,9 +177,11 @@ def _tma_descriptor(weight, block_n, block_k):
 #: "num_stages is inert here" reading came from an offline harness that never
 #: passed `divisible_by_16`, so the compiler assumed unaligned pointers and
 #: refused to pipeline or vectorise anything. Deeper trades occupancy for
-#: latency hiding, so `exact`/`trans`/`hoist` go three deep while the `gemm`
-#: incumbent stays at two: the warmup times them against each other.
-DEEP_STAGES = 3
+#: latency hiding AND costs ptxas time: candidate 96 tried three and the run
+#: was cancelled at 919 s of the 900 s limit (the one before it, 915 s).
+#: Compile time is the binding constraint, so this stays at two until warmup
+#: has room to spare.
+DEEP_STAGES = 2
 
 
 def _block_m(m):
@@ -356,7 +358,7 @@ MAX_ROWS = 32
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 28.0
+_PROCESS_SECONDS = 22.0
 _SHAPE_SECONDS = 6.0
 
 
