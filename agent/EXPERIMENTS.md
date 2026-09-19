@@ -1539,3 +1539,14 @@ median of three): interference and clock ramp can only push readings up, and
 the pacing simulation calibrated the floor in units of the true pass time.
 Pushed with candidate 86 (plain-decode attention search above batch 16: hidden
 shapes only). Read-out: public-0 TPOT should sit at the low end of its range.
+
+## Candidate 88 - embedding gather fused into the first norm (held)
+
+Decode steps and verify blocks start with `embed_tokens(token_ids)` (a gather
+kernel writing [rows, 2560]) and then the first layer's RMSNorm reading it
+back. `_embed_rms_norm_kernel` does both in one launch: it loads the
+embedding row, stores it as the residual stream, and normalizes it with the
+same cast placement as `_rms_norm_kernel`. Prefill keeps the native path.
+Interpreter: the residual equals table[ids] and the normalized output equals
+rms_norm(table[ids]) bit for bit; cuda:90 compile; smoke test 0 mismatches
+(344 launches). One launch and one [rows, 2560] read fewer per pass.
