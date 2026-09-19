@@ -40,9 +40,11 @@ class PackedAttention(torch.nn.Module):
         if past_key_value is not None:
             key = past_key_value.keys[self.layer_idx]
             value = past_key_value.values[self.layer_idx]
+            block = not past_key_value.prefilling and hidden_states.shape[1] > 1
             query = qk_rope_cache(
                 packed, self.q_norm, self.k_norm, cos, sin, cache_position,
-                key, value, self.q_width // self.head_dim, prefill=past_key_value.prefilling,
+                key, value, self.q_width // self.head_dim,
+                prefill=past_key_value.prefilling, rows=block,
             )
             if last_token_only:
                 # The final prompt query follows every cached key, so it is
@@ -50,14 +52,11 @@ class PackedAttention(torch.nn.Module):
                 attention = decode_attention(
                     query[:, :, -1:, :].contiguous(), key, value, cache_position[-1:], self.scaling,
                 )
-            elif not past_key_value.prefilling and hidden_states.shape[1] > 1:
-                # A verify block of one sequence. The fused kernel stored Q
-                # token-major, which is exactly [T,Hq,1,D] for a single row.
-                assert input_shape[0] == 1
-                tokens = hidden_states.shape[1]
+            elif block:
+                # Verify blocks: row b's tokens sit at cache_position[b] + t.
+                # The fused kernel stored Q token-major, as the kernel expects.
                 attention = block_attention(
-                    query.transpose(1, 2).reshape(tokens, -1, 1, self.head_dim),
-                    key, value, cache_position, self.scaling,
+                    query.transpose(1, 2), key, value, cache_position, self.scaling,
                 )
             elif past_key_value.prefilling:
                 length = hidden_states.shape[1]

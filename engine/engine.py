@@ -4,6 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM
 
 from decode import DecodeState, optimize_model
+from speculate import successor_table
 
 #: Decode steps enqueued beyond the one being read. Bounded, so an abandoned
 #: generator leaves little work behind and the launch queue stays shallow.
@@ -25,6 +26,10 @@ class Engine:
             .eval()
             .to("cuda:0")
         )
+        # Prompt-independent draft table for exact speculation: the native
+        # model's greedy successor of each single token. Drafts never reach the
+        # output unless the full model chooses the same token.
+        self.model.successor = successor_table(self.model)
         optimize_model(self.model)
         self.state = None
 

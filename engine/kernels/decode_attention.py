@@ -21,7 +21,6 @@ def _decode_partials(
     GROUPS: tl.constexpr, DIM: tl.constexpr, CAPACITY: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr, SCALE: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-    KV_HEADS: tl.constexpr = 1, SHARED: tl.constexpr = False,
 ):
     group = tl.program_id(0).to(tl.int64)  # flattened (batch, KV head)
     split = tl.program_id(1)
@@ -33,19 +32,12 @@ def _decode_partials(
         heads[:, None] < GROUPS, other=0,
     )
     valid = tl.load(position_ptr).to(tl.int32) + 1
-    cache_group = group
-    if SHARED:
-        # The "batch" is T successive queries of ONE sequence: query t sits at
-        # position + t, so it sees one more slot than query t - 1, and every
-        # query reads the same KV heads.
-        valid += (group // KV_HEADS).to(tl.int32)
-        cache_group = group % KV_HEADS
     begin = split * CHUNK
     end = tl.minimum(tl.minimum(begin + CHUNK, CAPACITY), valid)
     maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
     denominator = tl.zeros((BLOCK_M,), tl.float32)
     accumulator = tl.zeros((BLOCK_M, DIM), tl.float32)
-    cache_base = cache_group * CAPACITY * DIM
+    cache_base = group * CAPACITY * DIM
     for start in range(begin, end, BLOCK_N):
         tokens = start + columns
         key = tl.load(
@@ -103,7 +95,7 @@ def _decode_merge(
     tl.store(out_ptr + head * DIM + dims, numerator / denominator)
 
 
-def _attend(query, key, value, position, scale, config, shared=False):
+def _attend(query, key, value, position, scale, config):
     batch, query_heads, _, dim = query.shape
     kv_heads, capacity = key.shape[1:3]
     groups = query_heads // kv_heads
@@ -116,7 +108,7 @@ def _attend(query, key, value, position, scale, config, shared=False):
         query, key, value, position, partial, stats,
         GROUPS=groups, DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk,
         SCALE=scale, BLOCK_M=max(16, triton.next_power_of_2(groups)), BLOCK_N=block_n,
-        KV_HEADS=kv_heads, SHARED=shared, num_warps=warps, num_stages=2,
+        num_warps=warps, num_stages=2,
     )
     _decode_merge[(batch * query_heads,)](
         partial, stats, out, GROUPS=groups, DIM=dim, SPLITS=splits,
@@ -223,18 +215,122 @@ def decode_attention(query, key, value, position, scale):
     return _attend(query, key, value, position, scale, _CONFIGS[shape])
 
 
-def block_attention(query, key, value, position, scale):
-    """T successive queries of one sequence: Q [T,Hq,1,D], KV [1,Hkv,C,D] -> [T,1,Hq,D].
+@triton.jit
+def _block_partials(
+    q_ptr, k_ptr, v_ptr, position_ptr, partial_ptr, stats_ptr,
+    TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
+    DIM: tl.constexpr, CAPACITY: tl.constexpr, SPLITS: tl.constexpr, CHUNK: tl.constexpr,
+    SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    """Interval softmax for the TOKENS successive queries of one row and KV head.
 
-    Query t is at ``position + t`` and attends to every slot up to itself; the
-    block's own keys must already be in the cache. Same dense kernel as decode.
+    Query t of row b sits at position[b] + t and sees slots up to itself. All
+    TOKENS * GROUPS queries share each loaded K/V tile; only their masks differ.
+    Q is token-major [B,T,Hq,D]; same BF16/FP32 arithmetic as ``_decode_partials``.
     """
-    tokens, query_heads, one, dim = query.shape
+    group = tl.program_id(0).to(tl.int64)  # flattened (row, KV head)
+    split = tl.program_id(1)
+    row = group // KV_HEADS
+    kv_head = group % KV_HEADS
+    members = tl.arange(0, BLOCK_M)  # flattened (token, query head within the KV group)
+    live = members < TOKENS * GROUPS
+    token = members // GROUPS
+    dims = tl.arange(0, DIM)
+    columns = tl.arange(0, BLOCK_N)
+    q_head = kv_head * GROUPS + members % GROUPS
+    q_offset = ((row * TOKENS + token) * Q_HEADS + q_head) * DIM
+    query = tl.load(q_ptr + q_offset[:, None] + dims[None, :], live[:, None], other=0)
+    first = tl.load(position_ptr + row).to(tl.int32) + 1
+    valid = first + token.to(tl.int32)
+    begin = split * CHUNK
+    end = tl.minimum(tl.minimum(begin + CHUNK, CAPACITY), first + (TOKENS - 1))
+    maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
+    denominator = tl.zeros((BLOCK_M,), tl.float32)
+    accumulator = tl.zeros((BLOCK_M, DIM), tl.float32)
+    cache_base = group * CAPACITY * DIM
+    for start in range(begin, end, BLOCK_N):
+        tokens = start + columns
+        key = tl.load(
+            k_ptr + cache_base + tokens[None, :] * DIM + dims[:, None],
+            tokens[None, :] < end, other=0,
+        )
+        scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
+        visible = (tokens[None, :] < end) & (tokens[None, :] < valid[:, None])
+        scores = tl.where(visible, scores, -float("inf"))
+        next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
+        # A query that has seen nothing yet keeps -inf; never form -inf - -inf.
+        pivot = tl.where(next_maximum == -float("inf"), 0.0, next_maximum)
+        probabilities = tl.exp2(scores - pivot[:, None])
+        correction = tl.exp2(maximum - pivot)
+        denominator = denominator * correction + tl.sum(probabilities, axis=1)
+        accumulator = accumulator * correction[:, None]
+        value = tl.load(
+            v_ptr + cache_base + tokens[:, None] * DIM + dims[None, :],
+            tokens[:, None] < end, other=0,
+        )
+        accumulator = tl.dot(probabilities.to(tl.bfloat16), value, accumulator)
+        maximum = next_maximum
+    slot = (group * SPLITS + split) * (TOKENS * GROUPS) + members
+    tl.store(partial_ptr + slot[:, None] * DIM + dims[None, :], accumulator, live[:, None])
+    tl.store(stats_ptr + slot * 2, maximum, live)
+    tl.store(stats_ptr + slot * 2 + 1, denominator, live)
+
+
+@triton.jit
+def _block_merge(
+    partial_ptr, stats_ptr, out_ptr,
+    TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
+    DIM: tl.constexpr, SPLITS: tl.constexpr, BLOCK_S: tl.constexpr,
+):
+    index = tl.program_id(0).to(tl.int64)  # flattened (row, token, query head) = output order
+    head = index % Q_HEADS
+    token = (index // Q_HEADS) % TOKENS
+    row = index // (Q_HEADS * TOKENS)
+    group = row * KV_HEADS + head // GROUPS
+    member = token * GROUPS + head % GROUPS
+    splits = tl.arange(0, BLOCK_S)
+    dims = tl.arange(0, DIM)
+    slot = (group * SPLITS + splits) * (TOKENS * GROUPS) + member
+    maxima = tl.load(stats_ptr + slot * 2, splits < SPLITS, other=-float("inf"))
+    denominators = tl.load(stats_ptr + slot * 2 + 1, splits < SPLITS, other=0)
+    maximum = tl.max(maxima, axis=0)
+    correction = tl.exp2(maxima - maximum)
+    partials = tl.load(partial_ptr + slot[:, None] * DIM + dims[None, :], splits[:, None] < SPLITS, other=0)
+    denominator = tl.sum(denominators * correction, axis=0)
+    numerator = tl.sum(partials * correction[:, None], axis=0)
+    tl.store(out_ptr + index * DIM + dims, numerator / denominator)
+
+
+def block_attention(query, key, value, position, scale):
+    """Verify blocks: token-major Q [B,T,Hq,D], KV [B,Hkv,C,D], position [B] -> [B,T,Hq,D].
+
+    Query t of row b is at ``position[b] + t`` and attends to every slot up to
+    itself; the block's own keys must already be in the cache.
+    """
+    batch, tokens, query_heads, dim = query.shape
     kv_heads, capacity = key.shape[1:3]
-    assert one == 1 and key.shape[0] == 1 and query_heads % kv_heads == 0
+    assert key.shape[0] == batch and query_heads % kv_heads == 0
     assert query.dtype == key.dtype == value.dtype == torch.bfloat16
     assert query.is_contiguous() and key.is_contiguous() and value.is_contiguous()
     assert value.shape == key.shape and key.shape[3] == dim and dim in (64, 128)
-    assert position.shape == (1,) and position.dtype == torch.int64
-    config = _default_config(tokens, kv_heads, capacity)
-    return _attend(query, key, value, position, scale, config, shared=True)
+    assert position.shape == (batch,) and position.dtype == torch.int64
+    groups = query_heads // kv_heads
+    members = tokens * groups
+    block_n, splits, warps = _default_config(batch, kv_heads, capacity)
+    chunk = triton.cdiv(capacity, splits)
+    partial = torch.empty((batch * kv_heads, splits, members, dim), device=query.device, dtype=torch.float32)
+    stats = torch.empty((batch * kv_heads, splits, members, 2), device=query.device, dtype=torch.float32)
+    out = torch.empty((batch, tokens, query_heads, dim), device=query.device, dtype=query.dtype)
+    _block_partials[(batch * kv_heads, splits)](
+        query, key, value, position, partial, stats,
+        TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
+        DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk, SCALE=scale,
+        BLOCK_M=max(16, triton.next_power_of_2(members)), BLOCK_N=block_n,
+        num_warps=warps, num_stages=2,
+    )
+    _block_merge[(batch * tokens * query_heads,)](
+        partial, stats, out,
+        TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
+        DIM=dim, SPLITS=splits, BLOCK_S=triton.next_power_of_2(splits), num_warps=4,
+    )
+    return out

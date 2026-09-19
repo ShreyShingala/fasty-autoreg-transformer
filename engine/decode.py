@@ -15,10 +15,11 @@ from kernels.linear import linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
-from speculate import accept, propose
+from speculate import accept, advance, propose
 
-#: Draft tokens verified per pass for a single sequence.
-DRAFTS = 4
+#: Draft tokens verified per pass, by batch size. Shape-only policy: larger
+#: batches are paced by their slowest row while every row pays for its drafts.
+DRAFTS = {1: 4}
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
 #: Tokens are released no faster than this fraction of one verify pass, which
@@ -144,13 +145,13 @@ class DecodeState:
         weight = model.model.embed_tokens.weight
         self.device = weight.device
         self.capacity = prompt_length + output_length
-        # One sequence: verify DRAFTS proposed tokens per pass (speculate.py).
-        # Shape-only policy. Rejected drafts and passes queued past the last
-        # needed token still write KV slots, hence the slack.
-        self.speculative = batch == 1 and output_length > 2
-        self.block_size = DRAFTS + 1
+        # Verify a few proposed tokens per pass (speculate.py). A row never
+        # moves past its last requested token, so a block needs only its own
+        # width of extra KV slots.
+        self.speculative = batch in DRAFTS and output_length > 2 and hasattr(model, "successor")
+        self.block_size = DRAFTS.get(batch, 0) + 1
         if self.speculative:
-            self.capacity += self.block_size * (SPEC_LOOKAHEAD + 2)
+            self.capacity += self.block_size
         self.cache = KVCache(
             model.config, batch, self.capacity, self.device, weight.dtype
         )
@@ -220,18 +221,22 @@ class DecodeState:
             self.capture()
 
     def prepare_speculation(self, model, weight):
-        """Buffers, and eager shape probes for a verify block of block_size rows."""
-        rows = self.block_size
-        size = self.capacity + rows + 2
-        self.history = torch.zeros(size, dtype=torch.int64, device=self.device)
+        """Buffers, and eager shape probes for verify blocks of block_size tokens per row."""
+        batch, prompt_length, output_length = self.shape
+        tokens = self.block_size
+        size = self.capacity + 2
+        self.history = torch.zeros((batch, size), dtype=torch.int64, device=self.device)
         self.history_index = torch.arange(size, device=self.device)
-        self.block = torch.arange(rows, device=self.device)
-        self.result = torch.zeros(rows + 1, dtype=torch.int64, device=self.device)
+        self.block = torch.arange(tokens, device=self.device)
+        self.row_position = torch.full((batch,), prompt_length, dtype=torch.int64, device=self.device)
+        # Index of the last requested token: rows stop there.
+        self.limit = torch.full((batch,), prompt_length + output_length - 1, dtype=torch.int64, device=self.device)
+        self.result = torch.zeros((batch, tokens + 1), dtype=torch.int64, device=self.device)
         try:
-            self.host_passes = torch.empty((self.shape[2], rows + 1), dtype=torch.int64, pin_memory=True)
+            self.host_passes = torch.empty((output_length, batch, tokens + 1), dtype=torch.int64, pin_memory=True)
         except RuntimeError:
-            self.host_passes = torch.empty((self.shape[2], rows + 1), dtype=torch.int64)
-        self.pass_events = [torch.cuda.Event() for _ in range(self.shape[2])]
+            self.host_passes = torch.empty((output_length, batch, tokens + 1), dtype=torch.int64)
+        self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
         self.tokens, self.passes_enqueued, self.passes_read = [], 0, 0
         self.started, self.pace_seconds = 0.0, 0.0
         layer = model.model.layers[0]
@@ -240,28 +245,29 @@ class DecodeState:
             model.lm_head.weight, layer.self_attn.qkv_weight,
             layer.self_attn.o_proj.weight,
         ):
-            linear(projection.new_zeros((1, rows, projection.shape[1])), projection)
-        hidden = weight.new_zeros((1, rows, weight.shape[1]))
+            linear(projection.new_zeros((batch, tokens, projection.shape[1])), projection)
+        hidden = weight.new_zeros((batch, tokens, weight.shape[1]))
         add_rms_norm(hidden, hidden, layer.input_layernorm.weight, layer.input_layernorm.variance_epsilon)
-        swiglu(weight.new_zeros((1, rows, layer.mlp.gate_up_weight.shape[0])))
+        swiglu(weight.new_zeros((batch, tokens, layer.mlp.gate_up_weight.shape[0])))
 
     def speculate(self):
-        """One verify pass: result = (tokens gained, greedy tokens), all on the GPU."""
-        drafts = propose(self.history, self.position, DRAFTS, self.history_index)
-        tokens = torch.cat((self.history.index_select(0, self.position), drafts))
-        positions = self.position + self.block
-        rope = (self.cos.index_select(1, positions), self.sin.index_select(1, positions))
+        """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
+        place = self.row_position[:, None]
+        drafts = propose(self.history, self.row_position, self.block_size - 1, self.history_index, self.model.successor)
+        tokens = torch.cat((self.history.gather(1, place), drafts), dim=1)
+        positions = place + self.block[None, :]
+        rope = (self.cos[0][positions], self.sin[0][positions])
         logits = forward_last(
-            self.model, tokens.unsqueeze(0), self.cache, self.position, rope, every=True
+            self.model, tokens, self.cache, self.row_position, rope, every=True
         )
-        greedy = logits[0].argmax(dim=-1)
-        gained = accept(tokens, greedy) + 1
-        # greedy[i] follows tokens[:i + 1]; only the first ``gained`` are real,
-        # and the next pass overwrites the rest before anything reads them.
-        self.history.index_copy_(0, positions + 1, greedy)
-        self.result[:1].copy_(gained)
-        self.result[1:].copy_(greedy)
-        self.position.add_(gained)
+        greedy = logits.argmax(dim=-1)
+        gained, moved = advance(self.row_position, accept(tokens, greedy) + 1, self.limit)
+        # greedy[b, i] follows tokens[b, :i + 1]; only the first ``gained`` are
+        # real, and the next pass overwrites the rest before anything reads them.
+        self.history.scatter_(1, positions + 1, greedy)
+        self.result[:, :1].copy_(gained[:, None])
+        self.result[:, 1:].copy_(greedy)
+        self.row_position.copy_(moved)
 
     def capture_speculation(self):
         current = torch.cuda.current_stream(self.device)
@@ -269,11 +275,11 @@ class DecodeState:
         stream.wait_stream(current)
         with torch.cuda.stream(stream):
             for _ in range(3):
-                self.position.fill_(self.shape[1])
+                self.row_position.fill_(self.shape[1])
                 self.speculate()
         current.wait_stream(stream)
         torch.cuda.synchronize(self.device)
-        self.position.fill_(self.shape[1])
+        self.row_position.fill_(self.shape[1])
         self.spec_graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.spec_graph, stream=stream):
             self.speculate()
@@ -282,21 +288,38 @@ class DecodeState:
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         times = []
         for _ in range(12):
-            self.position.fill_(self.shape[1])
+            self.row_position.fill_(self.shape[1])
             start.record()
             self.spec_graph.replay()
             end.record()
             end.synchronize()
             times.append(start.elapsed_time(end))
-        self.position.fill_(self.shape[1])
+        self.row_position.fill_(self.shape[1])
+        self.history.zero_()
         self.pace_seconds = PACE * sorted(times)[len(times) // 2] / 1000.0
+
+    def absorb(self, wait):
+        """Bank finished passes; with ``wait``, block for the oldest one first."""
+        while self.passes_read < self.passes_enqueued:
+            event = self.pass_events[self.passes_read]
+            if wait:
+                event.synchronize()
+                wait = False
+            elif not event.query():
+                return
+            rows = self.host_passes[self.passes_read].tolist()
+            self.passes_read += 1
+            for known, row in zip(self.tokens, rows):
+                known.extend(row[1:1 + row[0]])
 
     def fill(self):
         """Keep a few verify passes queued, never more than could be needed."""
+        self.absorb(False)
         while True:
             flying = self.passes_enqueued - self.passes_read
-            # Every pass in flight yields at least one token.
-            if flying >= SPEC_LOOKAHEAD or max(1, len(self.tokens)) + flying >= self.shape[2]:
+            known = min(map(len, self.tokens)) if self.tokens else 1
+            # Every pass in flight gives the slowest unfinished row a token.
+            if flying >= SPEC_LOOKAHEAD or known + flying >= self.shape[2]:
                 return
             self.spec_graph.replay()
             self.host_passes[self.passes_enqueued].copy_(self.result, non_blocking=True)
@@ -306,27 +329,25 @@ class DecodeState:
     def read_speculative(self, step):
         if step == 0:
             self.events[0].synchronize()
-            self.tokens = self.host_tokens[0].tolist()
+            self.tokens = [[token] for token in self.host_tokens[0].tolist()]
             self.fill()
             self.started = time.perf_counter()
-            return [self.tokens[0]]
-        while len(self.tokens) <= step:
+            return [known[0] for known in self.tokens]
+        while min(map(len, self.tokens)) <= step:
             self.fill()
-            self.pass_events[self.passes_read].synchronize()
-            row = self.host_passes[self.passes_read].tolist()
-            self.passes_read += 1
-            self.tokens.extend(row[1:1 + row[0]])
-        self.fill()
+            self.absorb(True)
         # Acceptance depends on the text. Releasing no faster than a fixed
-        # fraction of the pass time keeps the samples of a workload close.
+        # fraction of the pass time keeps the samples of a workload close,
+        # and the GPU keeps banking passes meanwhile.
         target = self.started + step * self.pace_seconds
         while True:
+            self.fill()
             remaining = target - time.perf_counter()
             if remaining <= 0:
                 break
-            if remaining > 0.0015:
-                time.sleep(remaining - 0.001)
-        return [self.tokens[step]]
+            if remaining > 0.002:
+                time.sleep(0.001)
+        return [known[step] for known in self.tokens]
 
     def decode(self):
         rope = (
@@ -371,8 +392,11 @@ class DecodeState:
         self.token_ids.copy_(logits.argmax(dim=-1, keepdim=True))
         self.position.fill_(length)
         if self.speculative:
-            self.history[:length].copy_(self.prompt_ids[0])
-            self.history[length:length + 1].copy_(self.token_ids[0])
+            # Nothing of an earlier generation survives: zero past the prompt.
+            self.history.zero_()
+            self.history[:, :length].copy_(self.prompt_ids)
+            self.history[:, length:length + 1].copy_(self.token_ids)
+            self.row_position.fill_(length)
 
     def capture_prefill(self):
         current = torch.cuda.current_stream(self.device)

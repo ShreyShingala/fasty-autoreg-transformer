@@ -1,43 +1,85 @@
-"""Exact self-speculation for one sequence: propose from history, keep what greedy confirms.
+"""Exact self-speculation: propose from each row's history, keep what greedy confirms.
 
-Drafts are copied from the sequence's own tokens after the most recent earlier
-occurrence of its current suffix (three tokens, else two, else one). The full
+Drafts are copied from a row's own tokens after the most recent earlier
+occurrence of its current suffix, or follow a table of the model's own greedy
+successor of each single token when the row has nothing to copy. The full
 model then scores the trusted token and the drafts in one pass. A draft is kept
 only if it equals the model's own greedy choice at that position, so the output
 is the greedy sequence whatever the drafts were; bad drafts only cost time.
-Everything here is fixed-shape tensor code, safe inside a CUDA graph.
+Rows are independent. Everything is fixed-shape tensor code, safe in a CUDA graph.
 """
 
 import torch
 
 
-def propose(history, position, count, index):
-    """``count`` draft tokens to follow ``history[position]``.
+def propose(history, position, count, index, successor):
+    """``count`` draft tokens per row to follow ``history[b, position[b]]``.
 
-    ``history`` is int64 [C]; entries up to ``position`` (int64 [1]) are known,
-    later ones may be stale. ``index`` is ``arange(C)``. A match at ``j`` must
-    end before ``position`` so that its successor is a known token.
+    ``history`` is int64 [B,C]; row b is known up to ``position[b]`` (int64 [B])
+    and zero beyond. ``index`` is ``arange(C)``. ``successor`` is int64 [V]: the
+    model's own greedy token after each single token, a prompt-independent
+    table. Drafts copy the row's text after the latest earlier occurrence of
+    its suffix (at least two tokens) while that text is known, and otherwise
+    follow the table from the previous draft.
     """
-    size = history.shape[0]
-    last = history.index_select(0, position)
-    before = history.index_select(0, (position - 1).clamp_min(0))
-    earlier = history.index_select(0, (position - 2).clamp_min(0))
-    one = (history == last) & (index < position)
-    two = one & (torch.roll(history, 1) == before) & (index >= 1) & (position >= 1)
-    three = two & (torch.roll(history, 2) == earlier) & (index >= 2) & (position >= 2)
+    size = history.shape[1]
+    place = position[:, None]
+    last = history.gather(1, place)
+    before = history.gather(1, (place - 1).clamp_min(0))
+    earlier = history.gather(1, (place - 2).clamp_min(0))
+    column = index[None, :]
+    two = (history == last) & (column < place) & (torch.roll(history, 1, dims=1) == before) & (column >= 1) & (place >= 1)
+    three = two & (torch.roll(history, 2, dims=1) == earlier) & (column >= 2) & (place >= 2)
     # Longer suffix first, then the most recent occurrence.
-    rank = torch.where(three, index + 2 * size, torch.where(two, index + size, torch.where(one, index, index - size)))
-    best = rank.max().reshape(1)
-    start = torch.where(best >= 0, best % size, position)
-    return history.index_select(0, (start + 1 + index[:count]).clamp_max(size - 1))
+    rank = torch.where(three, column + size, torch.where(two, column, column - 2 * size))
+    best = rank.max(dim=1, keepdim=True).values
+    found = best >= 0
+    start = torch.where(found, best % size, place)
+    drafts = []
+    previous = last
+    for step in range(1, count + 1):
+        source = start + step
+        copied = history.gather(1, source.clamp_max(size - 1))
+        draft = torch.where(found & (source <= place), copied, successor[previous])
+        drafts.append(draft)
+        previous = draft
+    return torch.cat(drafts, dim=1)
 
 
 def accept(tokens, greedy):
-    """Number of leading drafts the model itself chose, as int64 [1].
+    """Per row, the number of leading drafts the model itself chose (int64 [B]).
 
-    ``tokens[0]`` is trusted and ``tokens[1:]`` are drafts; ``greedy[i]`` is the
-    model's choice after ``tokens[:i + 1]``. Draft i+1 stands only if it equals
-    ``greedy[i]`` and every earlier draft stood.
+    ``tokens[:, 0]`` is trusted and ``tokens[:, 1:]`` are drafts; ``greedy[:, i]``
+    is the model's choice after ``tokens[:, :i + 1]``. Draft i+1 stands only if it
+    equals ``greedy[:, i]`` and every earlier draft stood.
     """
-    agree = (tokens[1:] == greedy[:-1]).to(torch.int64)
-    return agree.cumprod(0).sum().reshape(1)
+    agree = (tokens[:, 1:] == greedy[:, :-1]).to(torch.int64)
+    return agree.cumprod(1).sum(1)
+
+
+def advance(position, gained, limit):
+    """Tokens each row really gains: a row never moves past ``limit``.
+
+    ``limit`` is the index of the last token the caller asked for, so rows that
+    finish early stop growing (and stop writing new KV slots) while slower rows
+    catch up. Returns (gained, new position).
+    """
+    gained = torch.minimum(gained, (limit - position).clamp_min(0))
+    return gained, position + gained
+
+
+def successor_table(model, chunk=4096):
+    """The model's greedy next token after each vocabulary token alone (int64 [V]).
+
+    Prompt-independent: computed from the weights once per process, with the
+    native forward, before any prompt is seen. It only ever proposes drafts.
+    """
+    vocabulary = model.get_input_embeddings().weight.shape[0]
+    device = model.get_input_embeddings().weight.device
+    table = torch.empty(vocabulary, dtype=torch.int64, device=device)
+    with torch.inference_mode():
+        for begin in range(0, vocabulary, chunk):
+            ids = torch.arange(begin, min(begin + chunk, vocabulary), device=device)[:, None]
+            logits = model(input_ids=ids, use_cache=False).logits
+            table[begin:begin + ids.shape[0]] = logits[:, -1, :].argmax(dim=-1)
+    return table

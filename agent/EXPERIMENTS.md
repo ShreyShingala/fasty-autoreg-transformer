@@ -484,6 +484,33 @@ Not verified locally: GPU execution of the verify block. Expected signal:
 public-0 TPOT near 0.82 x pass time (about 3.4 ms) if acceptance is decent.
 Removed the in-situ `refine` (no gain, costs warmup). Fallback: `e20537c`.
 
+Result (candidate 20): commit `e618984`, run
+`1666288c-1aeb-446c-a3d3-7f3e354a5a97` succeeded, ranked **948.143** (new
+best); every token verified by the judge, so the verify block is H100-correct.
+public-0: TPOT 3.764 ms (from 3.94), TTFT 10.73, totals p10/p50/p90
+122.2/127.5/136.1 ms; public-1/2 unchanged (4.499/4.573). Reading: a verify
+pass costs only about 2.5% more than a plain step (the slowest sample is about
+4.04 ms per token), but history lookup is accepted only about 10% of the time
+on this corpus, and no sample reached the 0.82 pace floor. Independent Claude
+and Codex reviews found no correctness defect; Codex noted that up to two
+unneeded passes can still be on the GPU after the last yield (kept: draining
+would cost about 3% at batch one, and TTFT has 2x headroom).
+
+## Candidate 21 — model-derived draft table, shared-KV block attention
+
+Drafts now fall back to a prompt-independent table: the native model's greedy
+successor of each single vocabulary token, computed once at load (about 3 s).
+History copies need a suffix of at least two tokens; otherwise, and wherever
+the copied text is not yet known, drafts follow the table from the previous
+draft. New `_block_partials/_block_merge` kernels load each K/V tile once for
+all T queries of a row (the c20 path re-read it per query), with per-row
+positions and phases so batching can be enabled next. Rows never move past
+their last requested token (no KV slack, no overrun by early finishers);
+history is zeroed per generation; finished passes are banked eagerly while
+pacing. CPU checks: batched speculation equals sequential greedy in 400 cases,
+host queue exact in 300 batched patterns, block-attention index formulas match
+a causal reference, all kernels compile for `cuda:90`. Still batch one only.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
