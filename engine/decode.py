@@ -70,10 +70,11 @@ def block_candidates(batch):
 
 #: Verify passes queued behind the GPU.
 SPEC_LOOKAHEAD = 2
-#: Batches above two are never held back by the release pace (offline: the
-#: floor binds only at batch 1-2), so there the queue exists purely to keep the
-#: GPU from waiting on the host between passes: one more in flight.
-SPEC_LOOKAHEAD_WIDE = 3
+#: A third pass in flight above batch two (candidate 89) cost 1-2% of public-1
+#: and public-2 TPOT: passes enqueued for the slowest row are still running
+#: when the generation ends, and the next sample's prefill waits behind them.
+#: Keep the queue at two.
+SPEC_LOOKAHEAD_WIDE = 2
 #: Release pacing. The score is the median sample, and the spread gate compares
 #: the fastest and slowest of five, so holding a fast sample back costs nothing
 #: as long as it stays below the median. Tokens are released no faster than

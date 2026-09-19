@@ -1618,3 +1618,14 @@ three options per block size. Budget back to 24 s, split across block sizes:
 about +8 s per workload, so roughly 700-750 s per run. Read-out: duration
 first, then public-1/2 TPOT (the GEMM kinds are what refinement chooses
 between).
+
+Result (candidate 90 = c86 reverted + numpy views + a third pass in flight
+above batch 2): commit `6d93ee0` succeeded, **1122.1** (normalized 1122.2),
+729 s. Reverting c86 recovered +0.7% over c88, but the run is still 1.2% under
+candidate 85 (1135.3), and three runs in a row have sat below it. Public TPOT
+2.965 / 3.914 / 4.157 vs c85's 2.853 / 3.810 / 4.082: every shape slightly
+slower, worst at batch 4/16 - the signature of the DEEPER PASS QUEUE (passes
+enqueued for the slowest row are still in flight when the generation ends, so
+the next sample's prefill queues behind them; the whole-system review called
+this out at lookahead 2 already). `SPEC_LOOKAHEAD_WIDE` back to 2. The numpy
+views and candidates 87/88 stay (both measured neutral on their own).
