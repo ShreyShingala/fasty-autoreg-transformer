@@ -1007,3 +1007,18 @@ against 310.6 / 527.1 / 3224.2. The lab's 1.5-2.5% fewer passes did not pay for
 the heavier propose kernel (16 warps, three [history x 16] compares per row);
 public-2 fell 2.2%. Discard: reverted by a new commit (kernel and its checks
 stay in history at `80b0ec4`). Candidate 50's run still contains it.
+
+Result (candidate 50, paired gate/up block option on the candidate 49 stack):
+commit `662342b` succeeded, **1080.3**, public 315.1 / 525.0 / 3162.8, whole run
+799 s (cap 900 s). No public-case gain over candidate 49 and +90 s of warmup:
+discard, reverted. Candidate 51 (`80d38ef`, GEMM tiles + inheritance, still with
+the paired option) was canceled at validation: it risked the 900 s cap.
+
+## Candidate 52 — candidate 48 + GEMM tiles + layout inheritance, nothing else
+
+Candidate 51 minus the paired block option and its knob shadowing; ranked drafts
+already reverted. First push gated by the new local checks: whole-engine CPU
+smoke test (`agent/local_cpu/smoke_engine.py`, 0 mismatches, exact/trans GEMM
+kinds chosen and exercised), every kernel executed in the Triton interpreter
+(`agent/local_cpu/interp/all.sh`, exit 0), offline cuda:90 compile + index
+emulation, unit tests, `dryft validate`.
