@@ -788,6 +788,19 @@ the proxy corpora (P(at least one) about 0.26): roughly 1.5% at batch one with
 32 outputs, a few tenths of a percent once the slowest row gates a batch. Not
 worth the prefill-graph surgery.
 
+Result (candidate 35): commit `f3e6c80`, run `cdb5ee5b` succeeded, ranked
+**1054.565** (candidate 34: 1065.4). public 281.3 / 513.1 / 3099.8, each slightly
+below candidate 34. The lab's -1.4..-3.6% did not show up: policy refinements
+of this size are below the platform's run-to-run noise, and the platform text is
+harder than the proxy corpora. Discard unless the stacked candidates say
+otherwise; do not spend more runs on sub-2% draft tweaks.
+
+Lab note (successor table): bare-token context predicts the model's next
+greedy token 12.9% of the time (top-4 26.9%, top-8 34.7%); adding the
+log-probabilities from a newline-prefixed context gives 15.3% / 30.6% / 38.9%;
+a corpus-statistics predictor (not available to the engine) reaches about
+18% / 33%.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
