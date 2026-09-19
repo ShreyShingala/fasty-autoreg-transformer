@@ -1373,3 +1373,21 @@ launched with 2. "tma3" = same kernel and arithmetic, num_stages=3 (offline:
 3 descriptor copies, 2 ahead of the loop; 0.4 s compile), listed right after
 "tma"; `_choose`/refine decide. Not for "tmah" (4 tiles x 3 stages would
 exceed the 228 KB of shared memory per SM).
+
+Result (candidate 69 = c67 + tile GEMM for 33-64 rows (c68) + conditional
+mask-free attention loop + attention knob first): commit `bc52548` CANCELED at
+the 900 s cap (c67: 612 s). Cause: MAX_ROWS = 64 opened `_choose` to every
+33-64-row shape (64-row verify blocks at batches 9-16, plain decode at batches
+33-64) with slow 64-lane compiles that the per-candidate deadline checks cannot
+interrupt. Reverted (MAX_ROWS 32, block order (32, 64)). The run stacked on it
+(`73063f2`, c70+c71) was canceled as it started. LESSON (again): a change that
+adds tuned shapes must be costed in compile seconds x six workloads.
+
+## Candidate 76 - everything held since c67, without the 64-row tile path
+
+c67 (612 s) + conditional mask-free attention loop and attention knob first
+(c69's safe part) + pass time measured back to back (c70) + TTFT-aware pacing
+floor (c71) + refine budget 8 -> 16 s and projection tuning 24 -> 28 s (c72,
+trimmed after two cap hits today) + `tmah` (c73) + merge-free one-token decode
+(c74) + `tma3` (c75). Expected run time 700-760 s. Read-outs: duration first;
+public-0 TPOT (floor/pass time), public-1/2 TPOT (GEMM kinds), TTFT unchanged.

@@ -293,13 +293,14 @@ def _cold_graph_time(fn, flush):
     return statistics.median(times)
 
 
-#: Verify blocks of up to 64 rows (batches 9-16 at four tokens per row) may use
-#: the tile kernels too, but only where warmup TIMED them faster than cuBLAS.
-MAX_ROWS = 64
+#: Verify blocks of up to 32 rows still read each weight once per step. (64-row
+#: tiles were tried in candidate 68: their extra shapes and slow 64-lane
+#: compiles pushed the whole run past the 900 s limit.)
+MAX_ROWS = 32
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 30.0
+_PROCESS_SECONDS = 28.0
 _SHAPE_SECONDS = 6.0
 
 

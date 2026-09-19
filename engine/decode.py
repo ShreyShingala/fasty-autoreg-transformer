@@ -50,9 +50,7 @@ def block_candidates(batch):
     if batch > 16:
         return []
     sizes = []
-    # Batches 9-16: the 64-row size first, so that it is the one whose
-    # projections get timed (the 32-row size can inherit tile layouts).
-    for rows in ((16, 32) if batch <= 8 else (64, 32)):
+    for rows in ((16, 32) if batch <= 8 else (32, 64)):
         fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
         if max(fitting) not in sizes:
             sizes.append(max(fitting))
@@ -430,7 +428,7 @@ class DecodeState:
         long_output = self.shape[2] >= LONG_OUTPUT
         # The whole run has room again (612 s of 900 with candidate 67): spend it
         # where layouts are judged inside the real graph.
-        seconds = 24.0 / len(self.candidates)  # every refine call may overrun by one option
+        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:
