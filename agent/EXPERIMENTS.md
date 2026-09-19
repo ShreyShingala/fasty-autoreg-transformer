@@ -1193,3 +1193,19 @@ through their partials and times each candidate the way its caller uses it
 (`split_ok`), so layer-projection tuning compiles no merge kernel: more shapes
 fit the same budget and timings match real use. Smoke test: merge launches
 195 -> 137, 0 mismatches.
+
+## Candidate 65 - remove the two prefill tuners; give their time to verify-pass tuning (held)
+
+Evidence from our own results: public TTFT has been flat (10.4-11.2 / 116-120 /
+106-109 ms) across every run before and after the gated prefill GEMM tuner
+(c48) and the cuDNN attention probe (c57): neither ever won on a public prefill
+shape, while the audit puts their cost at 8-11 s of warmup per workload.
+Removed: `engine/kernels/gated_linear.py` (prefill goes back to cuBLAS +
+SwiGLU, the path both tuners fell back to), the cuDNN probe in `attention.py`
+(FLASH as before). `_PROCESS_SECONDS` 18 -> 24: with candidate 64's cheaper
+per-shape tuning that should cover all five verify-block projections instead
+of about two and a half. Also: successor table sends only the last position
+through lm_head (identical logits, checked). Gates: interpreter suite, smoke
+test, unit tests, validate. Expected: shorter run, better-tuned verify pass;
+TTFT unchanged. If TTFT RISES on public-1, the gated kernel did win somewhere
+and must come back.

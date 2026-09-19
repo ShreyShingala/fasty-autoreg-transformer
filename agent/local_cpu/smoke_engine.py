@@ -139,7 +139,6 @@ def main():
     import engine as engine_module
     import decode
     import kernels.decode_attention
-    import kernels.gated_linear
     import kernels.linear
 
     if not args.real_table:
@@ -149,7 +148,7 @@ def main():
         def once(fn, *unused):
             fn()
             return cuda_shim.random_time()
-        kernels.linear._cold_graph_time = kernels.gated_linear._cold_graph_time = once
+        kernels.linear._cold_graph_time = once
         kernels.decode_attention._graph_time = once
     if args.layers:
         pretrained = engine_module.AutoModelForCausalLM.from_pretrained

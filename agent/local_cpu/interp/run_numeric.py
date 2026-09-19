@@ -89,15 +89,6 @@ def attention():
     for config in ((32, 4, 4), (64, 1, 4)):
         report(f"_decode_partials/_decode_merge {config}", A._attend(q, k, v, position, D ** -0.5, config), want.bfloat16(), tol=2e-2)
 
-def gated():
-    from kernels import gated_linear as GL
-    for m, width, k, option in ((5, 100, 200, (16, 32, 64, 4)), (20, 70, 130, (32, 32, 64, 4))):
-        x = torch.randn(m, k).bfloat16(); w = (torch.randn(2 * width, k) * 0.05).bfloat16()
-        proj = (x.float() @ w.float().T).bfloat16()              # each projection rounds to BF16 once
-        want = F.silu(proj[:, :width]) * proj[:, width:]
-        got = GL._run(x, w, option)
-        report(f"_paired_projection m={m} I={width} K={k} {option}", got, want, tol=float(want.float().abs().max()) / 64)
-
 def qkrope():
     from kernels.qk_rope import qk_rope_cache
     class Norm:
@@ -139,5 +130,5 @@ def argmax():
         negative = torch.full(shape, -7.0).bfloat16()            # all equal and below the mask's fill
         report(f"argmax equal {shape} block={block}", kernel(negative, block=block), negative.argmax(-1))
 
-which = sys.argv[1:] or ["argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention", "gated"]
+which = sys.argv[1:] or ["argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention"]
 for name in which: section(globals()[name])
