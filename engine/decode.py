@@ -18,31 +18,32 @@ from kernels.tune import knobs
 from layers import PackedAttention, PackedMLP
 from kernels import spec
 
-def block_shape(batch):
-    """(tokens per row, chain drafts by matched-suffix length 0-1 / 2-3 / 4-7 / 8+), from the batch size alone.
+#: Chain drafts by matched-suffix length (0-1 / 2-3 / 4-7 / 8+) for each block
+#: size; the rest of a block are alternatives to draft 1. Fitted offline on the
+#: model's greedy text (192 samples, six corpora): 1.4-3.6% fewer passes than
+#: the best fixed split at every size.
+DRAFTS_BY_MATCH = {
+    16: (5, 8, 13, 14), 8: (2, 4, 6, 7), 5: (2, 3, 4, 4), 4: (1, 2, 3, 3),
+    3: (1, 2, 2, 2), 2: (1, 1, 1, 1),
+}
 
-    Official runs: a pass of up to 16 rows costs about one ordinary step, a
-    32-row pass at batch 4 about 17% more (and lost), so blocks stay within 16
-    rows wherever that leaves a draft; batches 9-16 take one draft at 18-32
-    rows, which still paid. The rest of a row's block (tokens - 1 - drafts) are
-    alternatives to draft 1. Offline replays of the model's greedy text (192
-    samples, six corpora): a long suffix match earns a deep chain and no match
-    earns wide alternatives, 1.4-3.6% fewer passes than the best fixed split.
+
+def block_shape(batch, prompt_length):
+    """(tokens per row, chain drafts by match length) from the workload's shape alone.
+
+    Official runs: up to 16 rows a pass costs about one ordinary step. 32 rows
+    cost about 5% more through the skinny GEMM at short context, but at
+    4 x 2048 they cost 17% more (the block's attention work doubles) and lost
+    (TPOT 4.21 vs 3.98-4.12 ms), while the hidden aggregate preferred 20-32 row
+    blocks for batches 3-8 (1061-1065 vs 1052). So: 32 rows when the prompt is
+    short, 16 when it is long; batches 9-16 take one draft either way.
     One token per row means no speculation.
     """
-    if batch == 1:
-        return 16, (5, 8, 13, 14)
-    if batch == 2:
-        return 8, (2, 4, 6, 7)
-    if batch == 3:
-        return 5, (2, 3, 4, 4)
-    if batch == 4:
-        return 4, (1, 2, 3, 3)
-    if batch == 5:
-        return 3, (1, 2, 2, 2)
-    if batch <= 16:
-        return 2, (1, 1, 1, 1)
-    return 1, (0, 0, 0, 0)
+    if batch > 16:
+        return 1, (0, 0, 0, 0)
+    rows = 16 if (prompt_length >= 1536 or batch <= 2) else 32
+    tokens = max(size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch))
+    return tokens, DRAFTS_BY_MATCH[tokens]
 
 
 #: Verify passes queued behind the GPU.
@@ -180,7 +181,7 @@ class DecodeState:
         # Verify a few proposed tokens per pass (speculate.py). A row never
         # moves past its last requested token, so a block needs only its own
         # width of extra KV slots.
-        self.block_size, self.drafts_by_match = block_shape(batch)
+        self.block_size, self.drafts_by_match = block_shape(batch, prompt_length)
         self.speculative = self.block_size > 1 and output_length > 2 and hasattr(model, "successor")
         if self.speculative:
             self.capacity += self.block_size

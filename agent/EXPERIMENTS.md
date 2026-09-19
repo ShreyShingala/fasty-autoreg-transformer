@@ -752,6 +752,19 @@ warmup generation, which moved the median sample.
 
 ## Candidate 36 — the warmup generation never sets the pace
 
+Result (candidate 32): commit `ff9307f`, run `e8b616e5` succeeded, ranked
+**1051.712** (discard). public-1 519.5 (TPOT 4.122 with 4 tokens per row at
+4 x 2048, better than 8 tokens), public-0 292.9, public-2 3147.8; yet the hidden
+aggregate is 1.3% below candidates 28-29, whose batches 3-8 used 20-32 row
+blocks. Reading: large blocks lose at long context (attention work doubles)
+and win at short context.
+
+## Candidate 37 — block size from batch and prompt length
+
+32-row budget when the prompt is shorter than 1536 tokens (batches 3-10), a
+16-row budget otherwise; batches 1-2 stay at 16 rows; batches up to 16 always
+get at least one draft. Uses candidate 35's match-length maps.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
