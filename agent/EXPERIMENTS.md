@@ -1133,3 +1133,14 @@ in the verify-block candidate list. Checks: cuda:90 compile on 5 shapes x 3 row
 counts (0.5 s each), numpy replay of the pointer arithmetic (0 failures),
 interpreter within 0.5 ulp, smoke test (211 launches, 0 mismatches). Refine
 budget 8 s split across block sizes to stay under the 900 s cap.
+
+## Candidate 61 - mask-free prefix loop in the verify attention kernel (held)
+
+`_block_partials` masked every KV tile and ran the visibility select on all of
+them; tiles wholly inside the known prefix (the vast majority at 512-2048
+context) need neither. Two loops now: unmasked whole-prefix tiles, then the
+masked tail with the tree mask (what FA2/SGLang/vLLM decode kernels do).
+Bit-identical to the committed kernel in the Triton interpreter on 144 cases
+(positions incl. 0, chains, 4 layouts, GQA configs); cuda:90 compile +0.3 s per
+variant; smoke test 0 mismatches. Expected: attention is 8% of a pass at batch
+1 x 512, 15-19% at 4 x 2048 and batch 16; masks are maybe a tenth of that.
