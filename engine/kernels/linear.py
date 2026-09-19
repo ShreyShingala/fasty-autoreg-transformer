@@ -178,7 +178,13 @@ def _candidates(m, n, k):
     return configs
 
 
-def _agrees(actual, reference):
+def _agrees(probe, weight, config, reference):
+    """Operator sanity check; a layout that fails to compile or launch is simply not offered."""
+    try:
+        actual = _project(probe, weight, config)
+    except Exception as error:
+        print(f"BF16 projection layout {config} skipped: {error!r}", flush=True)
+        return False
     return bool(((actual.float() - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
 
 
@@ -198,7 +204,7 @@ def _inherit(x, weight):
             continue
         generator = torch.Generator(device=x.device).manual_seed(1729)
         probe = torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
-        if not _agrees(_project(probe, weight, config), F.linear(probe, weight)):
+        if not _agrees(probe, weight, config, F.linear(probe, weight)):
             continue
         _VALIDATED[(x.device, m, n, k)] = [(0.0, config), (1.0, None)]
         return config
@@ -231,10 +237,9 @@ def _choose(x, weight):
     for config in configs:
         if time.monotonic() >= shape_deadline:
             break
-        actual = _project(probe, weight, config)
         # Reject a kernel that fails an operator sanity check. Full-model
         # correctness still comes from the platform's own-prefix replay.
-        if not _agrees(actual, reference):
+        if not _agrees(probe, weight, config, reference):
             continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config), flush)
         validated.append((elapsed, config))

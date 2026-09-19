@@ -66,8 +66,8 @@ def launches(m, n, k, config):
 
 
 failures = 0
-# Real shapes: qkv, o, gate_up, down at verify-block row counts (even and ragged M).
-for m, (n, k) in itertools.product((5, 32), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728))):
+# Real shapes: qkv, o, gate_up, down, lm_head at verify-block row counts (even and ragged M).
+for m, (n, k) in itertools.product((5, 16, 32), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     for config in linear._candidates(m, n, k):
         if config[0] not in ("exact", "trans"):
             continue
