@@ -1398,3 +1398,22 @@ Result (candidate 76): commit `17e882c` succeeded, **1118.8** (normalized
 batch 4 back in its usual 3.98-4.08 band (c67's 3.742 was the outlier), batch
 16 level. Keep. Public-0 TTFT 10.7 (min 10.1) - the TTFT-aware floor cannot
 show on public shapes (all clamp to 0.70 or never bind).
+
+## Candidate 79 - TMA attention option + persistent TMA GEMM + per-batch block-size table
+
+On c76: (c77) block-attention layout options `default+("tma", 2|3)`: the
+whole-prefix K/V tiles come through pipelined TMA descriptor loads (one
+descriptor per layer for K and V over a [B*Hkv*C, 128] view; turned product
+key x query^T with statistics along axis 0; default OFF, offered to refine only
+where `_wide_prefix` holds, an eager probe must `torch.equal` the plain kernel
+or the option launches plain; 225/225 interpreter bit-identity cases for the
+restructured ordinary-load twin; 128 cuda:90 compiles). (c78) `tmap` / `tmap3`:
+persistent-launch TMA GEMM, <= 132 programs each looping over its tiles with
+the full K range, no FP32 partials, 3-deep ring for tmap3 (shared 54-58 KB);
+candidates for m > 4 with TMA on: [gemm64, tma, tmap, tmap3, tmah] (tma3 and
+hoist/exact dropped for the ~6 s per shape). (c79) EXPECTED_PASSES re-fitted
+per batch class with the stale-guess sibling on E[max over rows]
+(`~/.cache/fasty-lab/plan/expected_passes.md`): fixes wrong block choices at
+batch 2, 3, 12 and 16 with short outputs (0.3-2% there). Read-outs: duration
+(expect ~760-800 s: two more attention options and two more GEMM kinds to
+compile), public-1/2 TPOT for the TMA kinds.

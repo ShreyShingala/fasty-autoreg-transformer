@@ -63,15 +63,15 @@ def loop_ops(ttgir):
 failures = 0
 seconds = {"tma": [], "tma3": [], "tmah": []}
 for kind, m, (n, k) in itertools.product(
-        ("tma", "tma3", "tmah"), (16, 32, 64, 5), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
+        ("tma", "tmah"), (16, 32, 64, 5), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     kinds = [config[0] for config in linear._candidates(m, n, k)]
     assert "trans" not in kinds and kinds.index("tma") == 1, kinds  # "tma" replaces "trans"
-    assert "exact" not in kinds and kinds[1:5] == ["tma", "tma3", "tmap", "tmap3"] and len(kinds) <= 7, kinds  # compile_tmap.py
+    assert "exact" not in kinds and kinds[1:4] == ["tma", "tmap", "tmap3"] and len(kinds) <= 6, kinds
     configs = [config for config in linear._candidates(m, n, k) if config[0] == kind]
     if kind == "tmah" and n % 256:
         assert not configs, "tmah needs whole programs of four tiles"
         continue
-    assert len(configs) == 1 and (kind in ("tma", "tma3") or kinds.index("tmah") == 5), configs
+    assert len(configs) <= 1, configs  # a kind is listed at most once; tma3 is currently not offered
     config = configs[0]
     tiles = 4 if kind == "tmah" else 1
     # Fail-safe: no descriptor (this is a CPU) -> the trans kernel; strict (validation) -> an exception.

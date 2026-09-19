@@ -371,16 +371,18 @@ def _candidates(m, n, k):
             # "trans" with TMA weight loads; offered only while every fail-safe
             # holds, and early: the per-shape budget drops the tail of this list.
             configs.append(tiled("tma", 64, 128))
-            # Same kernel, three prefetched tiles deep (published Hopper TMA
-            # configurations use 3-5; two was our first guess).
-            configs.append(tiled("tma3", 64, 128))
-            # "tma" / "tma3" with ONE split on a persistent launch of <= 132 programs, each
-            # looping over its share of the tiles: no waves, no idle SMs, no FP32 partials.
+            # "tma" with ONE split on a persistent launch of <= 132 programs, each
+            # looping over its share of the tiles: no waves, no idle SMs, no FP32
+            # partials; and the same three prefetched tiles deep (published
+            # Hopper TMA configurations use 3-5).
             configs += [("tmap", 64, 128, 1, 4), ("tmap3", 64, 128, 1, 4)]
             if n % (4 * 64) == 0:
                 # "tma" with the x-tile load hoisted over four weight tiles per program.
                 configs.append(hoisted(64, 128, "tmah"))
-        configs.append(hoisted(64, 128))
+            # (tma3 and the ordinary hoist are left out while TMA is on: the
+            # ~6 s per shape cover about five layouts under the sandboxed host.)
+        else:
+            configs.append(hoisted(64, 128))
         if not tma:
             # "tma" is "trans" plus TMA loads: only one of the two is ever listed. "exact" (the
             # narrower matrix-multiply fragments, and "hoist" without its shared x load) makes
