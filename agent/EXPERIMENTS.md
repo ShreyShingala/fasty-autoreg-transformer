@@ -1574,3 +1574,13 @@ a pass read is a memory access rather than a torch call building Python lists
 per row. `SPEC_LOOKAHEAD_WIDE = 3` for batches above 2 (the release pace binds
 only at batch 1-2; above that the queue exists only to keep the GPU from
 waiting on the host between passes). Read-out: public-2 TPOT.
+
+Result (candidates 86+87): commit `425f95f` succeeded, **1119.2** (normalized
+1117.3; c85: 1135.3), 697 s. Public TPOT 2.893 / 4.057 / 4.122 ms - batch 1
+did not fall despite candidate 87 lowering the measured pass time, and batch 4
+rose. -1.6% is at the edge of the +/-1.3% noise, so the bundle is split rather
+than condemned: candidate 86 (the 4 s plain-decode attention search above
+batch 16) is REVERTED - it is the only part that changes which kernel runs on
+hidden shapes and it adds warmup to exactly those workloads. Candidate 87 (the
+pacing floor's pass time = fastest of five back-to-back groups) stays: it only
+changes a measurement, and c88 (measuring) already carries both.
