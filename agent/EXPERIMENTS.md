@@ -1506,3 +1506,16 @@ batch 32-64 x 2048 context the K/V read (20 GB per step at batch 64) is most
 of the step. A 4 s search now runs only when the batch exceeds 16; the public
 shapes (batch 1/4/16) are untouched. Smoke: batches 20 and 40 exercised the
 search on CPU (0 mismatches).
+
+## Merged team runs (from 20:35 UTC)
+
+The organisers allowed the three teams (SSS, dryfter, Silver Bullet) to merge;
+their repositories are extra run queues. Dispatch is one candidate per repo
+through a fast-forward merge commit (their history stays), pushed by the user
+(the auto-mode classifier blocks pushes to other repos from here). Their run
+results are visible only as each team's leaderboard best, so a dispatched
+candidate reads out only when it beats that team's previous best.
+- dryfter `33e665e` <- candidate 86 tree (`a8e5228`): c85 + plain-decode
+  attention search above batch 16. Their previous best: 1123.9.
+- Silver Bullet <- candidate 85 tree (`53e4a7a`, second draw): pending (their
+  main moved during the first attempt).
