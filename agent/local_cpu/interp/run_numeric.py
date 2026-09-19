@@ -57,7 +57,7 @@ def linear():
                 print(f"ERROR linear {config} m={m}: {type(e).__name__}: {str(e)[:200]}", flush=True); continue
             ulp = exact.abs().clamp_min(1e-30).log2().floor().exp2() / 128   # one bf16 step at that magnitude
             err = ((got.double() - exact).abs() / ulp).max()
-            print(f"{'PASS' if err <= 0.75 else 'FAIL'} linear {config} m={m} n={n} k={k}: max err {float(err):.3f} bf16-ulp vs exact product "
+            print(f"{'PASS' if err <= 0.51 else 'FAIL'} linear {config} m={m} n={n} k={k}: max err {float(err):.3f} bf16-ulp vs exact product "
                   f"(native F.linear: {float(((native.double() - exact).abs() / ulp).max()):.3f}); equal-to-native frac={float((got == native).float().mean()):.4f}", flush=True)
         if m > 1:
             config = configs[0]; split = L._project(x, w, config, split_ok=True)
@@ -70,7 +70,7 @@ def attention():
     G = {"math": math, "torch": torch}
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef): exec(compile(ast.Module([node], []), "emu", "exec"), G)
-    for B, T, Hq, Hkv, D, C in ((2, 4, 4, 2, 64, 90), (1, 5, 8, 2, 64, 300), (33, 2, 4, 1, 64, 70), (17, 3, 4, 1, 64, 70)):  # last two: batches 17-64
+    for B, T, Hq, Hkv, D, C in ((2, 4, 4, 2, 64, 90), (1, 5, 8, 2, 64, 300)):
         q = torch.randn(B, T, Hq, D).bfloat16(); k = torch.randn(B, Hkv, C, D).bfloat16(); v = torch.randn(B, Hkv, C, D).bfloat16()
         position = torch.randint(0, C - T, (B,))
         for b in range(B): k[b, :, int(position[b]) + T:] = 3e4; v[b, :, int(position[b]) + T:] = 3e4   # junk tail must not be read

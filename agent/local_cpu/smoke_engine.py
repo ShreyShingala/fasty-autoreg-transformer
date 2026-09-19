@@ -60,9 +60,6 @@ def parse():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--real-table", action="store_true", help="build the real successor table (very slow on CPU)")
     parser.add_argument("--real-tuning", action="store_true", help="keep the kernels' own timing loops (slow)")
-    parser.add_argument("--plain", default="never", choices=("never", "always", "timed"),
-                        help="batches > 16 time plain decode against the verify blocks: force speculation "
-                             "(default), force the plain fallback, or let the fake timings decide")
     parser.add_argument("--mutate", choices=("relocate", "limit"), help="break the engine on purpose: the run must FAIL")
     parser.add_argument("--strict", action="store_true", help="fail on near-ties too")
     return parser.parse_args()
@@ -173,13 +170,6 @@ def main():
             self.cache.prefilling = previous
     decode.DecodeState.prefill_forward = prefill_as_captured
 
-    if args.plain != "timed":
-        time_plain = decode.DecodeState.time_plain
-
-        def forced_plain(self, capture=True):
-            time_plain(self, capture)  # still captured and replayed: only the verdict is fixed
-            return float("inf") if args.plain == "never" else 0.0
-        decode.DecodeState.time_plain = forced_plain
     if args.mutate == "relocate":  # a kept alternative's K/V never moves to its slot
         decode.spec.relocate = lambda *a, **k: None
     if args.mutate == "limit":  # rows run past the last requested token
