@@ -10,18 +10,24 @@ their one idea - refine each block size before comparing - is in c60), dryfter
 Progress today: c48 1095.1 -> c53 1097.7 (GEMM tiles, keep_native) -> c54
 1115.0 (two-stage Triton argmax + trimmed budgets) -> c57 1129.7 (stale-guess
 sibling + cuDNN prefill option + frozen GC).
-c58 (32 MiB cuBLAS workspace) = 1111.9: discarded. In the queue (the platform
-is backed up; waits of 10+ min): c62 `8d34093` (c57 + refine-before-compare
-from Silver Bullet + hoisted-x GEMM candidate + mask-free attention prefix
-tiles + traffic-ordered tuning), c66 `da6c794` (+ warmup bundle: frozen heap
-before captures, one eager pass per refine option, split-aware projection
-tuning, prefill tuners REMOVED because TTFT never moved, `_PROCESS_SECONDS` 24,
-attention knob refined in traffic order). Held locally: refine tries only the
-three fastest layouts per projection. Subagents out: TMA descriptor-load GEMM
-candidate (worktree), copy-logit siblings lab test (RACER idea from the user's
-pasted research). Warmup audit: `~/.cache/fasty-lab/plan/warmup_audit.md`
-(host is gVisor: Triton compiles are slow; ~55 specializations + 35-45 graph
-captures per workload; platform overhead ~45 s per workload).
+c58 (32 MiB cuBLAS workspace) = 1111.9 and c62 (`8d34093`: refine-before-compare
++ hoisted GEMM candidate + mask-free attention tiles + traffic-ordered tuning) =
+1090.2: both below c57, but their nodes were slower (CONTROL: native's prefill
+TTFT on public-1/2 is GPU-bound and measured in the same run; c57 202.3/192.0,
+c58 203.7/193.5, c62 205.4/195.0 ms). Normalized: c58 -0.9%, c62 about -2%.
+Measuring: c66 `da6c794` (c62 + warmup bundle: frozen heap before captures,
+one eager pass per refine option, split-aware projection tuning, prefill tuners
+removed, `_PROCESS_SECONDS` 24, attention knob in traffic order). Queued: c67
+`822ce98` (+ TMA descriptor-load GEMM kind (fail-closed; a driver assert would
+abort the process = one lost slot), refine limited to the three fastest layouts,
+runtime COUNT in split consumers, successor table shares the newline KV,
+attention knob priority floor). Held locally: c68 `8c7343a` (tile GEMM for
+33-64-row blocks). IF c66 IS ALSO LOW: bisect c62 - dryfter's next run is c57 +
+only the mask-free attention loops (their fork copies our main: `git fetch
+https://github.com/john-jpet/fast-transformer +HEAD:refs/remotes/mate/main`),
+so watch their score for that part; then drop the hoisted candidate (restore
+gemm(256,128)) and the split refine budget.
+A self-scheduled cron tick (every 7 min, session-only) drives the loop.
 RULES OF THE ROAD: keep one run measuring + one queued; record run duration
 (`finishedAt - startedAt`) with every score - c52 was canceled at 917 s; every
 warmup second costs six. The harness hides engine stdout on purpose (hidden
