@@ -1927,3 +1927,25 @@ pinned samples run faster while the slowest is unchanged - but the latest
 public-0 samples spread 8.5% against a 25% gate, so a ~1% shift has room.
 Exactness class none: this is warmup measurement only, no kernel and no
 arithmetic changes.
+
+Result (candidate 103, split-K target 512 -> 128, dryfter `9a68694`):
+**1088.8 raw, 1094.6 normalized, node +0.5%, 692 s - a 4.3% REGRESSION** and
+far outside the +/-1.3% noise. **DISCARD**; branch `keep-splitk` is abandoned
+and must not be landed.
+
+This is the clean refutation of a bytes-only model of the GEMMs. The change
+removed 443.5 MB of FP32 partial traffic a pass - 0.13 ms of a 3.35 TB/s bus,
+a predicted +3.3% - by cutting the split counts to the smallest that still
+clears the bytes-in-flight estimate (123 CTAs of a 16 KB staged tile). It lost
+four times that much. So what the split count buys is not covered by Little's
+law at the granularity used: a CTA does not hold 16 KB outstanding, it holds
+about one prefetched stage, and cutting qkv 768 -> 192 CTAs, o/down 320 -> 160
+and gate_up 608 -> 304 starves the weight stream far more than the partials
+cost. **The 512 target is at or near a local optimum and should be left
+alone.** Raising it is not worth a slot either: the only projection it would
+move is gate_up, 2 -> 4 splits, which takes it from 608 CTAs (one wave of the
+1056 register-bound slots) to 1216 (two waves).
+
+The general lesson, which applies to the whole 30-item inventory: an item
+priced purely in bytes, with no account of how many CTAs are concurrently
+streaming, is not costed. Three items on that list are priced that way.
