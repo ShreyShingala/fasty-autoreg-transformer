@@ -1101,3 +1101,18 @@ cut converts 1:1); public-1/2 within noise. Keep.
 default is ~8 MiB; NVIDIA recommends 32 MiB on Hopper). Could let cuBLAS pick
 faster GEMM algorithms for prefill and for 64-row verify blocks. Read-out:
 TTFT on all public cases, TPOT on public-2.
+
+## Candidate 59 - compare block sizes after refining each (from the Silver Bullet fork, with consent) (held)
+
+`sivakovivan/silver-transformer` (team Silver Bullet, 1104.0, forked from our
+`80d38ef` and tracking our pushes) changed one thing: every candidate block
+size is refined inside its captured graph BEFORE the sizes are compared, on a
+share of the refine budget (we refined only the winner, so an untuned layout
+could lose the comparison). Adopted with our 10 s budget split across sizes.
+
+Fused QK-norm/RoPE/KV-write + block attention kernel (subagent, branch
+`worktree-agent-ad7f188c606e1cd22`, `85b43bb`): bit-exact in the interpreter
+(62 cases) and the smoke test, but PARKED: one variant compiles 25-35x slower
+than the two kernels it replaces (110-155 s under emulation vs 4.4 s), which
+the 900 s run cap cannot absorb across six workloads, and it only applies to
+single-split attention layouts (batch 1 defaults to 18 splits).
