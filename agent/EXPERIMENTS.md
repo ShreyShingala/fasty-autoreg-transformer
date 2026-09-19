@@ -1331,3 +1331,18 @@ across block sizes), projection tuning budget 24 -> 30 s: about +22 s per
 workload, ~745 s per run. Refinement is the only place layouts are judged in
 the real captured pass; the audit estimated it used to reach two or three
 options per block size.
+
+## Candidate 73 - "tmah": TMA weight loads + one x load shared by four weight tiles (held)
+
+Built by a subagent on top of candidate 72 (`372204f`, cherry-picked): the
+`trans`-orientation kernel where one x tile per K chunk feeds four weight
+tiles, each loaded through the weight's existing TMA descriptor; its
+ordinary-load twin `_hoist_trans_gemm` is the fail-closed fallback with the
+identical grid, split count and partial layout (asserted by `compile_tma.py`).
+Candidates for m > 4: [gemm64, tma, tmah, hoist, exact] (`trans` only when TMA
+is retired; `tmah` needs n % 256 == 0, so not lm_head). Checks: 16/16 tmah
+compiles for cuda:90 (4 TMA copies + 1 ordinary load per loop iteration, no
+TMA stores), twin compiled on 20 shapes + 26 pointer-arithmetic replays (0
+failures), interpreter (twin) within 0.5 ulp and bit-equal to `trans` at equal
+split counts, smoke test, unit tests. GPU unknowns: speed; four live TMA tiles
+per program.
