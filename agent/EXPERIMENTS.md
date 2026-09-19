@@ -935,6 +935,15 @@ From john-jpet's fork: gate, up and SwiGLU in one launch for verify blocks.
 Offered to `refine` next to the split-GEMM + SwiGLU path once it agrees on a
 random probe. Push when the queue is below four runs.
 
+Result (candidate 44): commit `45146de`, run `8fe03586` succeeded, ranked
+**1092.267** — new best, #1 (dryfter 1087.3). public 300.8 / 542.6 / 3188.5;
+public-1 TPOT 3.754 ms (4.0-4.2 before). This is candidates 37-43 minus the
+cuBLASLt and 64-row trials: merge-free split-GEMM consumers, the two-context
+successor table, the single-pass attention option, block size by prompt
+length, pace floor by output length. Against the same stack with the two
+trials (candidate 42 run: 1048.8) the trials hurt; cuBLASLt is dropped for
+good, 64-row blocks only return through the warmup measurement (candidate 48).
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
