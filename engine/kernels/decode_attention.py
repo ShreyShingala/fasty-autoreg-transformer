@@ -221,6 +221,7 @@ def _block_partials(
     TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
     DIM: tl.constexpr, CAPACITY: tl.constexpr, SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    CHAIN: tl.constexpr = 1 << 30,
 ):
     """Interval softmax for the TOKENS successive queries of one row and KV head.
 
@@ -241,7 +242,12 @@ def _block_partials(
     q_offset = ((row * TOKENS + token) * Q_HEADS + q_head) * DIM
     query = tl.load(q_ptr + q_offset[:, None] + dims[None, :], live[:, None], other=0)
     first = tl.load(position_ptr + row).to(tl.int32) + 1
-    valid = first + token.to(tl.int32)
+    # Tokens below CHAIN form a causal chain. Later tokens are alternative
+    # first drafts: each sees the prefix through the trusted token and its own
+    # slot only, never the chain or another alternative.
+    chained = token < CHAIN
+    valid = first + tl.where(chained, token, 0).to(tl.int32)
+    own = tl.where(chained, -1, first - 1 + token.to(tl.int32))
     begin = split * CHUNK
     end = tl.minimum(tl.minimum(begin + CHUNK, CAPACITY), first + (TOKENS - 1))
     maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
@@ -255,7 +261,7 @@ def _block_partials(
             tokens[None, :] < end, other=0,
         )
         scores = tl.dot(query, key) * (SCALE * 1.4426950408889634)
-        visible = (tokens[None, :] < end) & (tokens[None, :] < valid[:, None])
+        visible = (tokens[None, :] < end) & ((tokens[None, :] < valid[:, None]) | (tokens[None, :] == own[:, None]))
         scores = tl.where(visible, scores, -float("inf"))
         next_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
         # A query that has seen nothing yet keeps -inf; never form -inf - -inf.
@@ -301,11 +307,13 @@ def _block_merge(
     tl.store(out_ptr + index * DIM + dims, numerator / denominator)
 
 
-def block_attention(query, key, value, position, scale):
+def block_attention(query, key, value, position, scale, chain=None):
     """Verify blocks: token-major Q [B,T,Hq,D], KV [B,Hkv,C,D], position [B] -> [B,T,Hq,D].
 
-    Query t of row b is at ``position[b] + t`` and attends to every slot up to
-    itself; the block's own keys must already be in the cache.
+    Token t of row b occupies slot ``position[b] + t``. The first ``chain``
+    tokens attend causally; the rest are alternatives to token 1 and attend to
+    the prefix through token 0 plus themselves. The block's own keys must
+    already be in the cache.
     """
     batch, tokens, query_heads, dim = query.shape
     kv_heads, capacity = key.shape[1:3]
@@ -326,7 +334,7 @@ def block_attention(query, key, value, position, scale):
         TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
         DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk, SCALE=scale,
         BLOCK_M=max(16, triton.next_power_of_2(members)), BLOCK_N=block_n,
-        num_warps=warps, num_stages=2,
+        CHAIN=tokens if chain is None else chain, num_warps=warps, num_stages=2,
     )
     _block_merge[(batch * tokens * query_heads,)](
         partial, stats, out,

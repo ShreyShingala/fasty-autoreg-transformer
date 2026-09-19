@@ -17,25 +17,29 @@ from kernels.swiglu import swiglu
 from layers import PackedAttention, PackedMLP
 from kernels import spec
 
-def block_tokens(batch):
-    """Tokens per row in a verify block, from the batch size alone.
+def block_shape(batch):
+    """(chain tokens incl. the trusted one, alternatives to draft 1) per row, from the batch size alone.
 
     Up to 16 rows a block still reads each weight once and costs about one
-    ordinary step, so small batches take long chains (offline, a chain of 8
-    needs 4% fewer passes than a chain of 4). Official runs showed 32-row
-    blocks through cuBLAS still pay at batch 16 with one draft; the second
-    draft is worth about 10% fewer passes, so batches 5-8 take it at 24 rows.
-    One token means no speculation.
+    ordinary step; official runs showed 24-32 rows through cuBLAS still pay for
+    one or two drafts. Offline replays of the model's greedy text: with 16 rows
+    a chain of 8 plus 7 alternatives needs 19% fewer passes than a chain of 4,
+    with 8 rows 4+3 beats 7+0, with 4-5 rows one alternative beats one more
+    chain token. (1, 0) means no speculation.
     """
-    if batch <= 2:
-        return min(9, 16 // batch)
-    if batch <= 4:
-        return min(5, 16 // batch)
+    if batch == 1:
+        return 9, 7
+    if batch == 2:
+        return 5, 3
+    if batch == 3:
+        return 4, 1
+    if batch == 4:
+        return 3, 1
     if batch <= 8:
-        return 3
+        return 3, 0
     if batch <= 16:
-        return 2
-    return 1
+        return 2, 0
+    return 1, 0
 
 
 #: Verify passes queued behind the GPU.
@@ -82,13 +86,14 @@ class KVCache:
         if head_dim is None:
             head_dim = config.hidden_size // config.num_attention_heads
         shape = (batch, config.num_key_value_heads, capacity, head_dim)
+        self.chain = None
         # Capture warmup runs before the first prefill. Keep its synthetic
         # prefix finite; real generation subsequently overwrites that prefix.
-        self.keys = [
-            torch.zeros(shape, dtype=dtype, device=device)
-            for _ in range(config.num_hidden_layers)
-        ]
-        self.values = [torch.zeros_like(key) for key in self.keys]
+        # One allocation [key/value, layer, B, Hkv, C, D]: layers are contiguous
+        # views, and a kept alternative's slot can move in every layer at once.
+        self.store = torch.zeros((2, config.num_hidden_layers, *shape), dtype=dtype, device=device)
+        self.keys = [self.store[0, layer] for layer in range(config.num_hidden_layers)]
+        self.values = [self.store[1, layer] for layer in range(config.num_hidden_layers)]
         self.prefilling = False
 
     def update(self, key, value, layer_idx, cache_kwargs):
@@ -166,7 +171,8 @@ class DecodeState:
         # Verify a few proposed tokens per pass (speculate.py). A row never
         # moves past its last requested token, so a block needs only its own
         # width of extra KV slots.
-        self.block_size = block_tokens(batch)
+        self.chain, self.siblings = block_shape(batch)
+        self.block_size = self.chain + self.siblings
         self.speculative = self.block_size > 1 and output_length > 2 and hasattr(model, "successor")
         if self.speculative:
             self.capacity += self.block_size
@@ -245,7 +251,14 @@ class DecodeState:
         size = self.capacity + 2
         self.history = torch.zeros((batch, size), dtype=torch.int64, device=self.device)
         self.history_index = torch.arange(size, device=self.device)
-        self.block = torch.arange(tokens, device=self.device)
+        # RoPE phase of each block token: the chain counts up, alternatives
+        # all stand where draft 1 stands. (KV slots are simply position + t.)
+        self.phase = torch.tensor(
+            list(range(self.chain)) + [1] * self.siblings, dtype=torch.int64, device=self.device
+        )
+        self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
+        self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
+        self.cache.chain = self.chain
         self.row_position = torch.full((batch,), prompt_length, dtype=torch.int64, device=self.device)
         # Index of the last requested token: rows stop there.
         self.limit = torch.full((batch,), prompt_length + output_length - 1, dtype=torch.int64, device=self.device)
@@ -270,16 +283,23 @@ class DecodeState:
 
     def speculate(self):
         """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
-        tokens = spec.propose(self.history, self.row_position, self.block_size - 1, self.model.successor)
-        positions = self.row_position[:, None] + self.block[None, :]
-        rope = (self.cos[0][positions], self.sin[0][positions])
+        tokens = spec.propose(
+            self.history, self.row_position, self.chain - 1, self.siblings, self.model.successor
+        )
+        phases = self.row_position[:, None] + self.phase[None, :]
+        rope = (self.cos[0][phases], self.sin[0][phases])
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )
         greedy = logits.argmax(dim=-1)
-        # Keep the drafts the model itself chose, never past the last requested
-        # token; record greedy tokens in the history; move each row.
-        spec.settle(tokens, greedy, self.row_position, self.limit, self.history, self.result)
+        # Keep what the model itself chose (chain drafts, or one alternative),
+        # never past the last requested token; record it; move each row.
+        spec.settle(
+            tokens, greedy, self.row_position, self.limit, self.history, self.result,
+            self.move_from, self.move_to, self.chain,
+        )
+        if self.siblings:
+            spec.relocate(self.cache.store, self.move_from, self.move_to)
 
     def capture_speculation(self):
         current = torch.cuda.current_stream(self.device)

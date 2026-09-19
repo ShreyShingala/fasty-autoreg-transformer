@@ -70,18 +70,19 @@ def advance(position, gained, limit):
     return gained, position + gained
 
 
-def successor_table(model, chunk=4096):
-    """The model's greedy next token after each vocabulary token alone (int64 [V]).
+def successor_table(model, chunk=4096, top=8):
+    """The model's ``top`` greedy next tokens after each vocabulary token alone (int64 [V, top]).
 
     Prompt-independent: computed from the weights once per process, with the
     native forward, before any prompt is seen. It only ever proposes drafts.
+    Column 0 is the greedy successor.
     """
     vocabulary = model.get_input_embeddings().weight.shape[0]
     device = model.get_input_embeddings().weight.device
-    table = torch.empty(vocabulary, dtype=torch.int64, device=device)
+    table = torch.empty((vocabulary, top), dtype=torch.int64, device=device)
     with torch.inference_mode():
         for begin in range(0, vocabulary, chunk):
             ids = torch.arange(begin, min(begin + chunk, vocabulary), device=device)[:, None]
-            logits = model(input_ids=ids, use_cache=False).logits
-            table[begin:begin + ids.shape[0]] = logits[:, -1, :].argmax(dim=-1)
-    return table
+            logits = model(input_ids=ids, use_cache=False).logits[:, -1, :]
+            table[begin:begin + ids.shape[0]] = logits.topk(top, dim=-1).indices
+    return table.contiguous()

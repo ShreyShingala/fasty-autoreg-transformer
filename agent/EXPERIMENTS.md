@@ -592,10 +592,35 @@ the main source (33-39%). The platform corpus is harder than these proxies
 `propose` (reference and fused kernel) ranks earlier occurrences of the
 3/2/1-token suffix; the table is used only when the newest token never occurred.
 
+Result (candidate 25): commit `8adb604`, run
+`74855daf-1d2a-42ca-9dbf-b394a28ff7bc` succeeded, ranked **1042.440** — new best
+and **leaderboard #1** (Segfault 1013.0 at 13:43 UTC). public-0 268.1 tokens/s
+(TPOT 3.507, p10/p50/p90 119.0/119.4/125.2: on the 0.75 pace floor), public-1
+495.9, public-2 3136.8 (TPOT 4.317). The lab's ranking of draft policies
+transferred to the platform.
+
 ## Candidate 26 — block sizes from the lab
 
 `block_tokens`: batch 1 -> 9 tokens, 2 -> 8, 3 -> 5, 4 -> 4, 5-8 -> 3 (24 rows
 through cuBLAS), 9-16 -> 2, larger -> plain. Queued behind candidate 25.
+
+## Candidate 27 — tree drafts: alternatives for the first draft position
+
+Block per row: [trusted token, chain drafts, alternatives to draft 1].
+Alternatives come from what followed other occurrences of the suffix, then the
+model-derived top-8 successor table (now [V, 8]); all distinct from draft 1.
+In `_block_partials` an alternative sees the prefix through the trusted token
+plus only its own slot, with RoPE phase position + 1. `_settle`: if draft 1
+missed but an alternative equals the model's first choice, two tokens are
+gained (that choice and the model's choice after it) and `_relocate` copies
+the alternative's K/V slot to position + 1 in every layer of the new stacked
+KV store [2, L, B, Hkv, C, D]. Shapes by batch: 1 -> 9 chain + 7 alternatives,
+2 -> 5 + 3, 3 -> 4 + 1, 4 -> 3 + 1, 5-8 -> 3 + 0, 9-16 -> 2 + 0.
+Offline (wiki, 128 outputs): 0.500 passes per token for 9+7 versus 0.621 for
+the candidate-25 chain. CPU checks: a line-by-line emulation of propose/settle
+with a toy model and a slot-level cache model equals sequential greedy in 300
+cases (757 alternative branches); the tree mask formulas match a reference;
+all kernels compile for `cuda:90`. Two independent reviews requested.
 
 ## Where the remaining time is (analysis, 2026-09-19)
 

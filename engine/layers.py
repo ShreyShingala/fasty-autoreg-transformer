@@ -57,6 +57,7 @@ class PackedAttention(torch.nn.Module):
                 # The fused kernel stored Q token-major, as the kernel expects.
                 attention = block_attention(
                     query.transpose(1, 2), key, value, cache_position, self.scaling,
+                    chain=past_key_value.chain,
                 )
             elif past_key_value.prefilling:
                 length = hidden_states.shape[1]

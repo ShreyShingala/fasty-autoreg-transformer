@@ -1,7 +1,7 @@
 """Emulate _block_partials/_block_merge index formulas verbatim (float64) against reference attention."""
 import math, torch
 torch.manual_seed(0)
-def emulate(query, key, value, position, scale, splits, block_n):
+def emulate(query, key, value, position, scale, splits, block_n, chain):
     B, T, Hq, D = query.shape; Hkv, C = key.shape[1:3]; G = Hq // Hkv; M = T * G
     chunk = -(-C // splits)
     qf, kf, vf = query.reshape(-1), key.reshape(-1), value.reshape(-1)
@@ -17,13 +17,15 @@ def emulate(query, key, value, position, scale, splits, block_n):
                 q_head = kv_head * G + member % G
                 q_offset = ((row * T + token) * Hq + q_head) * D
                 q = qf[q_offset:q_offset + D]
-                valid = first + token
+                chained = token < chain
+                valid = first + (token if chained else 0)
+                own = -1 if chained else first - 1 + token
                 maximum, denom, acc = -math.inf, 0.0, torch.zeros(D, dtype=torch.float64)
                 for start in range(begin, end, block_n):
                     toks = [t for t in range(start, start + block_n)]
                     scores = []
                     for t in toks:
-                        if t < end and t < valid:
+                        if t < end and (t < valid or t == own):
                             k = kf[group * C * D + t * D: group * C * D + t * D + D]
                             scores.append(float(q @ k) * scale)
                         else: scores.append(-math.inf)
@@ -48,14 +50,15 @@ def emulate(query, key, value, position, scale, splits, block_n):
         out[index * D:(index + 1) * D] = sum(p * c for p, c in zip(parts, corr)) / sum(d * c for d, c in zip(denoms, corr))
     return out.reshape(B, T, Hq, D)
 
-def reference(query, key, value, position, scale):
+def reference(query, key, value, position, scale, chain):
     B, T, Hq, D = query.shape; Hkv = key.shape[1]; G = Hq // Hkv
     out = torch.zeros_like(query)
     for b in range(B):
         for t in range(T):
-            n = int(position[b]) + t + 1
+            p = int(position[b])
+            slots = list(range(p + t + 1)) if t < chain else list(range(p + 1)) + [p + t]
             for h in range(Hq):
-                k, v = key[b, h // G, :n], value[b, h // G, :n]
+                k, v = key[b, h // G, slots], value[b, h // G, slots]
                 out[b, t, h] = torch.softmax((k @ query[b, t, h]) * scale, 0) @ v
     return out
 
@@ -64,6 +67,7 @@ for B, T, Hq, Hkv, D, C, splits, block_n in ((1, 5, 8, 2, 4, 23, 3, 4), (3, 4, 8
     k[:, :, :, :] += 0  # unused tail slots hold huge junk: they must never be read
     position = torch.randint(0, C - T, (B,))
     for b in range(B): k[b, :, int(position[b]) + T:] = 1e6; v[b, :, int(position[b]) + T:] = 1e6
-    got, want = emulate(q, k, v, position, D ** -0.5, splits, block_n), reference(q, k, v, position, D ** -0.5)
-    assert torch.allclose(got, want, atol=1e-9), (B, T, float((got - want).abs().max()))
-print("block attention index formulas match causal reference (incl. position 0, empty splits, junk tails)")
+    for chain in (T, max(1, T - 2), 2, 1):
+        got, want = emulate(q, k, v, position, D ** -0.5, splits, block_n, chain), reference(q, k, v, position, D ** -0.5, chain)
+        assert torch.allclose(got, want, atol=1e-9), (B, T, chain, float((got - want).abs().max()))
+print("block attention index formulas (chain and tree masks) match the reference, incl. position 0, empty splits, junk tails")
