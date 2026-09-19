@@ -155,6 +155,11 @@ def _tma_descriptor(weight, block_n, block_k):
         return None
 
 
+def _block_m(m):
+    """Input-row lanes of a tile: tl.dot needs at least 16, and whole powers of two."""
+    return 16 if m <= 16 else 32 if m <= 32 else 64
+
+
 def _project(x, weight, config, split_ok=False, strict=False):
     kind, block_n, block_k, splits, warps = config
     m, k = x.shape
@@ -170,12 +175,12 @@ def _project(x, weight, config, split_ok=False, strict=False):
     elif kind == "gemm":
         _skinny_gemm[(triton.cdiv(n, block_n), splits)](
             x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=16 if m <= 16 else 32,
+            BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=_block_m(m),
             num_warps=warps, num_stages=2,
         )
     elif kind == "hoist":
         # Four weight tiles per program share each x-tile load.
-        block_m = 16 if m <= 16 else 32
+        block_m = _block_m(m)
         _hoist_gemm[(triton.cdiv(n, 4 * block_n), splits)](
             x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
             BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, TILES=4,
@@ -185,7 +190,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
         )
     else:
         # kernels/gemm.py: each mask exists only where that axis is ragged.
-        block_m = 16 if m <= 16 else 32
+        block_m = _block_m(m)
         wide = max(n * k, splits * m * n) + 2 * block_n * max(k, m) >= 2 ** 31
         launched = False
         if kind == "tma":
@@ -247,8 +252,9 @@ def _cold_graph_time(fn, flush):
     return statistics.median(times)
 
 
-#: Verify blocks of up to 32 rows still read each weight once per step.
-MAX_ROWS = 32
+#: Verify blocks of up to 64 rows (batches 9-16 at four tokens per row) may use
+#: the tile kernels too, but only where warmup TIMED them faster than cuBLAS.
+MAX_ROWS = 64
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
@@ -309,7 +315,8 @@ def _inherit(x, weight):
     """
     m, k = x.shape
     n = weight.shape[0]
-    if m <= 4:
+    if m <= 4 or m > 32:
+        # Above 32 rows cuBLAS is a strong default: only a timed layout replaces it.
         return None
     for (device, rows, width, inner), config in list(_CHOICES.items()):
         if config is None or device != x.device or rows <= 4 or (width, inner) != (n, k):

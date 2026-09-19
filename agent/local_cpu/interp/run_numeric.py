@@ -45,7 +45,7 @@ def splitpath():
 
 def linear():
     from kernels import linear as L
-    for m, n, k in ((1, 200, 300), (5, 200, 300), (16, 130, 517), (20, 70, 260)):
+    for m, n, k in ((1, 200, 300), (5, 200, 300), (16, 130, 517), (20, 70, 260), (48, 70, 260), (64, 128, 256)):  # last two: 64-lane tiles
         x = torch.randn(m, k).bfloat16(); w = (torch.randn(n, k) * 0.05).bfloat16()
         exact = (x.double() @ w.double().T)
         native = F.linear(x, w)

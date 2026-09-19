@@ -1240,3 +1240,28 @@ are submitted; the subagent's child-process probe was removed (an interpreter
 + torch import per workload under gVisor costs more than the run cap allows).
 Goes out alone after c66 so a crash cannot take other changes with it. Also in
 this commit: refine tries only the three fastest layouts per projection.
+
+Result (candidate 62 = c57 + refine-before-compare + hoisted GEMM candidate +
+mask-free attention tiles + traffic-ordered tuning): commit `8d34093`
+succeeded, **1090.2** (c57: 1129.7); public 292.6 / 515.6 / 3142.0; TTFT 11.2 /
+121.9 / 110.9 ms (c57: 10.5 / 117.3 / 107.7) although nothing in it touches
+prefill. CONTROL FOUND: native's prefill TTFT on public-1/2 is GPU-bound and
+measured on the same node in the same run: 205.4 / 195.0 ms here vs 202.3 /
+192.0 (c57) and 203.7 / 193.5 (c58) -> this node was ~1.6% slower (c58's
+~0.7%). (Native TPOT is host-bound, 17-30 ms, useless as a control.)
+Normalized, c62 is about -2% and c58 about -0.9%: neither is a clean verdict at
++/-1% run noise. Suspects inside c62, in order: the two-loop attention kernel
+(bit-identical output but 40-60% more code per program - may cost occupancy),
+hoist replacing gemm(256,128), the split refine budget. Candidate 66 (c62 +
+warmup bundle) is the second sample; bisect only if it is also clearly low.
+ALWAYS record native TTFT next to a score from now on.
+
+## Candidate 68 - tile GEMM kernels for 33-64-row blocks (held)
+
+MAX_ROWS 32 -> 64 with 64-lane tiles: batches 9-16 verify four tokens per row
+through 36-64 rows that always went to cuBLAS. Only a layout that warmup TIMED
+faster than cuBLAS is used above 32 rows (no inheritance there); for batches
+9-16 the 64-row size is now measured first so that it is the one that gets the
+tuning budget. Checks: cuda:90 compile + pointer-arithmetic replay for 48 and
+64 rows on all five shapes (0 failures), interpreter within 0.5 ulp at 48 and
+64 rows, smoke test with batch 12 and 16 (0 mismatches).

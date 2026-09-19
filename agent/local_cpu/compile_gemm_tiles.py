@@ -68,7 +68,7 @@ def launches(m, n, k, config):
 
 failures = 0
 # Real shapes: qkv, o, gate_up, down, lm_head at verify-block row counts (even and ragged M).
-for m, (n, k) in itertools.product((5, 16, 32), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
+for m, (n, k) in itertools.product((5, 16, 32, 48, 64), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     for config in linear._candidates(m, n, k):
         if config[0] not in ("exact", "trans", "hoist"):
             continue
@@ -86,7 +86,7 @@ for m, (n, k) in itertools.product((5, 16, 32), ((6144, 2560), (2560, 4096), (19
 
 # Small shapes through the same _project constants: even and ragged on every axis.
 rng = np.random.default_rng(0)
-for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128)):
+for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128), (48, 100, 256), (64, 192, 384)):
     for kind in ("exact", "trans", "hoist"):
         for splits in (1, 2, 3):
             config = (kind, 64, 128, splits, 4)
