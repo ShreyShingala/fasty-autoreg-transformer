@@ -1528,3 +1528,14 @@ PLATEAU: c76, c80, c82 all normalize to 1125-1127; c67's 1130.6 was a good
 draw of the same level (its rerun: 1118.4). c85 (PDL off + mailbox + rope
 tables) is the PDL A/B. Warmup tuning outcomes vary per run and move public
 TPOT by up to 10%: treat single public probes accordingly.
+
+## Candidate 87 - pass time for the floor = fastest of five back-to-back groups
+
+At batch 1 every sample is paced at 0.70 x the warmup-measured pass time, so a
+high reading there slows the whole workload: the same kernels gave floor-set
+public-0 TPOT of 2.857 (c76), 2.915 (c82) and 3.389 ms (c80). The measurement
+now takes the minimum of five groups of four back-to-back replays (was the
+median of three): interference and clock ramp can only push readings up, and
+the pacing simulation calibrated the floor in units of the true pass time.
+Pushed with candidate 86 (plain-decode attention search above batch 16: hidden
+shapes only). Read-out: public-0 TPOT should sit at the low end of its range.

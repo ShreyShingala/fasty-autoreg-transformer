@@ -451,7 +451,7 @@ class DecodeState:
         # latency that a synchronize after every replay adds to each one.
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         times = []
-        for _ in range(3):
+        for _ in range(5):
             self.row_position.fill_(self.shape[1])
             torch.cuda.synchronize(self.device)
             start.record()
@@ -463,7 +463,11 @@ class DecodeState:
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
         self.stale.fill_(-1)
-        self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
+        # The fastest reading is the pass time: the floor must be set by the
+        # pass itself, not by a clock still ramping or a neighbour's traffic
+        # (on the platform the floor-set batch-1 TPOT varied 2.86-3.39 ms for
+        # the same kernels between runs).
+        self.pass_seconds = min(times) / 1000.0
         self.pace_seconds = self.pace_floor() * self.pass_seconds
 
     def pace_floor(self):
