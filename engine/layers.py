@@ -5,7 +5,7 @@ from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
 from kernels.decode_attention import block_attention, decode_attention
-from kernels.gated_linear import gated_linear
+from kernels.gated_linear import block_option, gated_block, gated_linear
 from kernels.linear import MAX_ROWS, linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
@@ -97,5 +97,10 @@ class PackedMLP(torch.nn.Module):
         if rows > MAX_ROWS and hidden_states.dtype == torch.bfloat16:
             # Prefill: gate/up GEMM with the SwiGLU epilogue, if it measured faster.
             return linear(gated_linear(hidden_states, self.gate_up_weight), self.down_proj.weight)
+        if split_ok:
+            option = block_option(hidden_states, self.gate_up_weight)
+            if option is not None:
+                gated = gated_block(hidden_states, self.gate_up_weight, option)
+                return linear(gated, self.down_proj.weight, split_ok=split_ok)
         gate_up = linear(hidden_states, self.gate_up_weight, split_ok=split_ok)
         return linear(swiglu(gate_up), self.down_proj.weight, split_ok=split_ok)

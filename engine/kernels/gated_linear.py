@@ -18,6 +18,7 @@ import triton.language as tl
 
 from kernels.linear import _cold_graph_time, linear
 from kernels.swiglu import swiglu
+from kernels.tune import register
 
 
 @triton.jit
@@ -129,3 +130,42 @@ def gated_linear(x, weight):
             raise RuntimeError("gated projection selection must finish during eager warmup")
         _CHOICES[key] = _choose(flat, weight)
     return _run(flat, weight, _CHOICES[key]).reshape(*x.shape[:-1], weight.shape[0] // 2)
+
+
+_BLOCK_CHOICES = {}
+
+
+def block_option(x, weight):
+    """Layout for a verify block's gate/up (<= 32 rows): None = split GEMM feeding SwiGLU, or paired.
+
+    The paired kernel does gate, up and SwiGLU in one launch. It starts as an
+    option only: the captured verify graph decides (DecodeState.refine). It is
+    offered once it agrees with the existing path on a random probe.
+    """
+    flat = x.reshape(-1, x.shape[-1])
+    key = (x.device, flat.shape[0], weight.shape[0], flat.shape[1])
+    if key not in _BLOCK_CHOICES:
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        _BLOCK_CHOICES[key] = None
+        option = (16 if flat.shape[0] <= 16 else 32, 32, 64, 4)
+        generator = torch.Generator(device=x.device).manual_seed(27182)
+        probe = torch.randn(flat.shape, device=x.device, dtype=x.dtype, generator=generator)
+        try:
+            agrees = torch.allclose(
+                _run(probe, weight, option).float(), _run(probe, weight, None).float(), rtol=0.035, atol=0.02
+            )
+        except Exception as error:
+            print(f"paired gate/up block layout skipped: {error!r}", flush=True)
+            agrees = False
+        if agrees:
+            register(
+                ("gated_block",) + key[1:], flat.shape[0], weight.numel() + 1, [None, option],
+                lambda: _BLOCK_CHOICES[key], lambda choice: _BLOCK_CHOICES.__setitem__(key, choice),
+            )
+    return _BLOCK_CHOICES[key]
+
+
+def gated_block(x, weight, option):
+    flat = x.reshape(-1, x.shape[-1]).contiguous()
+    return _run(flat, weight, option).reshape(*x.shape[:-1], weight.shape[0] // 2)

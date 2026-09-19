@@ -926,6 +926,15 @@ lab's reference policy on 1280 of 1280 blocks; lab CV gain -1.5% passes pooled
 contract unchanged, so exactness arguments carry over. num_warps 16 because the
 kernel now does three [history x 16] comparisons per row.
 
+Leaderboard 15:52 UTC: dryfter 1087.3 (their gated GEMM + single-pass attention
+commit on our candidate 36), SSS 1075.7. Both ideas are in our queued stack.
+
+## Candidate 50 — paired gate/up block kernel as a refine option (held locally)
+
+From john-jpet's fork: gate, up and SwiGLU in one launch for verify blocks.
+Offered to `refine` next to the split-GEMM + SwiGLU path once it agrees on a
+random probe. Push when the queue is below four runs.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
