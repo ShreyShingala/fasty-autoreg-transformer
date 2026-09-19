@@ -1209,3 +1209,16 @@ through lm_head (identical logits, checked). Gates: interpreter suite, smoke
 test, unit tests, validate. Expected: shorter run, better-tuned verify pass;
 TTFT unchanged. If TTFT RISES on public-1, the gated kernel did win somewhere
 and must come back.
+
+## Candidate 66 - one bundle: c63 + c64 + c65 + traffic-ordered attention refinement
+
+The platform queue is backed up (c62 waited > 12 min), so the queued c63 was
+canceled and replaced by this bundle of warmup/tuning changes, none of which
+can change a token: frozen heap before the captures, one eager pass per refine
+option, no wasted closing capture (c63); split-aware projection tuning (c64);
+prefill tuners removed, `_PROCESS_SECONDS` 24, leaner successor table (c65);
+the block-attention layout knob is refined in traffic order (8 x batch x
+capacity x kv_heads x dim against a projection's n x k) instead of always
+first - the audit estimated refine never reached a projection knob.
+Read-outs: run duration (expect well below c57's 815 s), TTFT (must not rise),
+TPOT on all three public cases.
