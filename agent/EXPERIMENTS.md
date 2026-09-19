@@ -1359,3 +1359,17 @@ probes are tuned split-aware like the verify probes. Review's estimate: 4-10%
 for batch 17-32 workloads, none of which is public, so the read-out is the
 normalized score only. Smoke test now includes plain batches 20, 32 and 48 (0
 mismatches).
+
+## Candidate 75 - "tma3": the TMA GEMM kind with a three-tile prefetch ring (held)
+
+Source audit of our Triton 3.1.0 (`~/.cache/fasty-lab/plan/triton31_hopper_features.md`):
+ordinary BF16 `tl.load`s are never pipelined (the matmul-loop-pipeline pass
+skips 16-bit loads; PTX identical for num_stages 1-4), only TMA descriptor
+loads are, and `_tma_gemm` compiles to a ring of `num_stages` prefetched weight
+tiles. Official Triton tutorials (found through the Exa search,
+`exa_hopper_research.md`): Hopper TMA configurations use 3-5 stages; their
+Hopper GEMM goes 489 -> 674 TFLOPS from 2 to 3 buffers, then plateaus. We
+launched with 2. "tma3" = same kernel and arithmetic, num_stages=3 (offline:
+3 descriptor copies, 2 ahead of the loop; 0.4 s compile), listed right after
+"tma"; `_choose`/refine decide. Not for "tmah" (4 tiles x 3 stages would
+exceed the 228 KB of shared memory per SM).

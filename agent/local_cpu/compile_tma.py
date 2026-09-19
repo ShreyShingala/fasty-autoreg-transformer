@@ -27,7 +27,7 @@ class Recorder:
         return lambda *args, **kwargs: self.calls.append((grid, args, kwargs))
 
 
-KERNELS = {"tma": ("_tma_gemm", "_trans_gemm"), "tmah": ("_tmah_gemm", "_hoist_trans_gemm")}
+KERNELS = {"tma": ("_tma_gemm", "_trans_gemm"), "tma3": ("_tma_gemm", "_trans_gemm"), "tmah": ("_tmah_gemm", "_hoist_trans_gemm")}
 
 
 def record(m, n, k, config, descriptor, strict=False):
@@ -61,16 +61,16 @@ def loop_ops(ttgir):
 
 
 failures = 0
-seconds = {"tma": [], "tmah": []}
+seconds = {"tma": [], "tma3": [], "tmah": []}
 for kind, m, (n, k) in itertools.product(
-        ("tma", "tmah"), (16, 32, 64, 5), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
+        ("tma", "tma3", "tmah"), (16, 32, 64, 5), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     kinds = [config[0] for config in linear._candidates(m, n, k)]
     assert "trans" not in kinds and kinds.index("tma") == 1, kinds  # "tma" replaces "trans"; the list does not grow
     configs = [config for config in linear._candidates(m, n, k) if config[0] == kind]
     if kind == "tmah" and n % 256:
         assert not configs, "tmah needs whole programs of four tiles"
         continue
-    assert len(configs) == 1 and (kind == "tma" or kinds.index("tmah") == 2), configs
+    assert len(configs) == 1 and (kind in ("tma", "tma3") or kinds.index("tmah") == 3), configs
     config = configs[0]
     tiles = 4 if kind == "tmah" else 1
     # Fail-safe: no descriptor (this is a CPU) -> the trans kernel; strict (validation) -> an exception.
@@ -88,7 +88,8 @@ for kind, m, (n, k) in itertools.product(
     assert constants["CHUNK"] % constants["BLOCK_K"] == 0 and constants.get("TILES", 1) == tiles
     # The fail-safe writes the same partial through the same grid: same split count, same constants, mask-free.
     assert fallback[0] == grid and grid[1] == config[3] == constants["SPLITS"], (fallback[0], grid)
-    assert all(fallback[2][key] == value for key, value in kwargs.items()), "fallback constants differ"
+    # (the prefetch depth is a launch option of the TMA kernel only, not part of the layout)
+    assert all(fallback[2][key] == value for key, value in kwargs.items() if key != "num_stages"), "fallback constants differ"
     assert fallback[2]["EVEN_N"] and fallback[2]["EVEN_K"] and fallback[1][2].shape == args[2].shape
     assert tuple(args[2].shape) == ((config[3], m, n) if config[3] > 1 else (m, n))
     try:
@@ -107,7 +108,8 @@ for kind, m, (n, k) in itertools.product(
         print("   in-loop (tma copies, tt.load) =", in_loop, flush=True)
         # The compiler pipelines the copies: one set ahead of the loop (step 0) and one set per
         # iteration (the next step's tiles, behind the dots). The x tile is the only ordinary load.
-        if (copies, weight_loads) != (2 * tiles, 1) or in_loop != (tiles, 1):
+        # (num_stages sets the depth: stages - 1 sets ahead of the loop, one inside it)
+        if (copies, weight_loads) != (kwargs["num_stages"] * tiles, 1) or in_loop != (tiles, 1):
             failures += 1
             print("UNEXPECTED LOAD STRUCTURE", kind, m, n, k)
         if not copies or not bulk or stores:

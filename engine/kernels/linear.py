@@ -95,7 +95,7 @@ def _merge_projection(
 # program; its fail-safe is ``_hoist_trans_gemm`` on the same grid, and it reads
 # the same [64, 128] descriptor as ``tma`` (one descriptor per weight for both).
 #: Kinds whose weights need a descriptor built in the eager pass.
-TMA_KINDS = ("tma", "tmah")
+TMA_KINDS = ("tma", "tma3", "tmah")
 #: Descriptor bytes; the blog's tuned value (the struct itself fits in 128).
 TMA_SIZE = 512
 _TMA_OFF = [False]
@@ -232,7 +232,7 @@ def _project(x, weight, config, split_ok=False, strict=False):
         block_m = _block_m(m)
         wide = max(n * k, splits * m * n) + 2 * block_n * max(k, m) >= 2 ** 31
         launched = False
-        if kind == "tma":
+        if kind in ("tma", "tma3"):
             desc = _tma_descriptor(weight, block_n, block_k) if n % block_n == 0 and splits * chunk == k else None
             if desc is None and strict:
                 raise RuntimeError("no TMA descriptor for this weight")
@@ -241,7 +241,9 @@ def _project(x, weight, config, split_ok=False, strict=False):
                     _tma_gemm[(n // block_n, splits)](
                         x, desc, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
                         BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, EVEN_M=m == block_m, WIDE=wide,
-                        num_warps=warps, num_stages=2,
+                        # Descriptor loads are the only loads this compiler pipelines: the
+                        # stage count is the depth of its ring of prefetched weight tiles.
+                        num_warps=warps, num_stages=3 if kind == "tma3" else 2,
                     )
                     launched = True
                 except Exception as error:
@@ -329,6 +331,9 @@ def _candidates(m, n, k):
             # "trans" with TMA weight loads; offered only while every fail-safe
             # holds, and early: the per-shape budget drops the tail of this list.
             configs.append(tiled("tma", 64, 128))
+            # Same kernel, three prefetched tiles deep (published Hopper TMA
+            # configurations use 3-5; two was our first guess).
+            configs.append(tiled("tma3", 64, 128))
             if n % (4 * 64) == 0:
                 # "tma" with the x-tile load hoisted over four weight tiles per program.
                 configs.append(hoisted(64, 128, "tmah"))
