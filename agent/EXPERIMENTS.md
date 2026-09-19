@@ -1144,3 +1144,8 @@ Bit-identical to the committed kernel in the Triton interpreter on 144 cases
 (positions incl. 0, chains, 4 layouts, GQA configs); cuda:90 compile +0.3 s per
 variant; smoke test 0 mismatches. Expected: attention is 8% of a pass at batch
 1 x 512, 15-19% at 4 x 2048 and batch 16; masks are maybe a tenth of that.
+Candidate 61 also gives the PLAIN decode kernel (`_decode_partials`, used for
+batches above 16 where the KV read dominates the step at long context) the
+same split: whole tiles unmasked, only the last tile masked. Bit-identical to
+the committed kernel in the interpreter on 96 cases (positions 0, 1, tile
+edges, 3 layouts); cuda:90 compile ok; smoke test incl. a batch-20 plain shape.
