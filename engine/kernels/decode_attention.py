@@ -12,6 +12,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.tune import register
+
 
 @triton.jit
 def _decode_partials(
@@ -167,6 +169,7 @@ def _choose(query, key, value, position, scale):
         config = (config[0], max(1, min(config[1], triton.cdiv(capacity, config[0]))), config[2])
         if config != default and config not in candidates:
             candidates.append(config)
+    agreeing = []
     deadline = time.monotonic() + _TUNING_SECONDS
     reference = _attend(query, key, value, position, scale, default)
     best, best_ms = default, _graph_time(lambda: _attend(query, key, value, position, scale, default))
@@ -176,6 +179,7 @@ def _choose(query, key, value, position, scale):
         actual = _attend(query, key, value, position, scale, config)
         if not torch.allclose(actual.float(), reference.float(), atol=0.02, rtol=0.02):
             continue
+        agreeing.append(config)
         elapsed = _graph_time(lambda: _attend(query, key, value, position, scale, config))
         if elapsed < best_ms * 0.97:
             best, best_ms = config, elapsed
@@ -186,7 +190,7 @@ def _choose(query, key, value, position, scale):
         if best_ms >= default_ms * 0.97:
             best = default
     print(f"decode attention warmup: layout={best} default={default}", flush=True)
-    return best
+    return best, [default, *agreeing]
 
 
 def decode_attention(query, key, value, position, scale):
@@ -202,5 +206,10 @@ def decode_attention(query, key, value, position, scale):
     if shape not in _CONFIGS:
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("attention layout selection must finish during eager warmup")
-        _CONFIGS[shape] = _choose(query, key, value, position, scale)
+        _CONFIGS[shape], agreeing = _choose(query, key, value, position, scale)
+        # Dense attention reads the whole KV prefix every step: weigh it highly.
+        register(
+            ("decode_attention",) + shape[1:], batch, 1 << 40, agreeing,
+            lambda: _CONFIGS[shape], lambda config: _CONFIGS.__setitem__(shape, config),
+        )
     return _attend(query, key, value, position, scale, _CONFIGS[shape])

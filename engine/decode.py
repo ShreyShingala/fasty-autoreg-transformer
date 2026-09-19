@@ -12,13 +12,10 @@ import torch
 from kernels import packed as packing
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
-from kernels.linear import current as projection_current
-from kernels.linear import decode_keys as projection_keys
 from kernels.linear import linear
-from kernels.linear import options as projection_options
-from kernels.linear import select as select_projection
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
+from kernels.tune import knobs
 from layers import PackedAttention, PackedMLP
 
 
@@ -266,8 +263,8 @@ class DecodeState:
         self.position.fill_(self.shape[1])
         return sorted(times)[len(times) // 2]
 
-    def refine(self, seconds=45.0):
-        """Keep a projection layout only if the real decode step gets faster.
+    def refine(self, seconds=60.0):
+        """Keep a layout or launch width only if the real decode step gets faster.
 
         Isolated kernel timings pick the starting layouts, but official runs
         showed they can disagree with the captured step. Try each shape's other
@@ -276,21 +273,20 @@ class DecodeState:
         during warmup, and the final graph is fixed before any measured sample.
         """
         deadline = time.monotonic() + seconds
-        rows = self.shape[0]
         best = self.step_ms()
-        for key in projection_keys(rows):
-            chosen = projection_current(key)
-            for option in projection_options(key):
+        for knob in knobs(self.shape[0]):
+            chosen = knob.get()
+            for option in knob.options:
                 if option == chosen:
                     continue
                 if time.monotonic() >= deadline:
                     break
-                select_projection(key, option)
+                knob.select(option)
                 self.capture()
                 elapsed = self.step_ms()
                 if elapsed < best * 0.995:
                     best, chosen = elapsed, option
-            select_projection(key, chosen)
+            knob.select(chosen)
         self.capture()
         self.token_ids.zero_()
 

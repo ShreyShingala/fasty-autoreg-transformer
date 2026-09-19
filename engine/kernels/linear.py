@@ -14,6 +14,7 @@ import triton
 import triton.language as tl
 
 from kernels import packed as packing
+from kernels.tune import register
 
 
 @triton.jit
@@ -185,8 +186,8 @@ _CHOICES = {}
 _VALIDATED = {}
 _PACKED_KINDS = ("pgemv", "pwgemv", "pgemm", "pwgemm")
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 110.0
-_SHAPE_SECONDS = 24.0
+_PROCESS_SECONDS = 70.0
+_SHAPE_SECONDS = 14.0
 
 
 def _candidates(m, n, k, packed):
@@ -301,6 +302,7 @@ def linear(x, weight):
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("projection selection must finish during eager warmup")
         _CHOICES[key] = _choose(flat, weight)
+        _register(key)
     choice, plain = _CHOICES[key]
     if choice is not None and choice[0] in _PACKED_KINDS and packing.lookup(weight) is None:
         choice = plain
@@ -309,23 +311,10 @@ def linear(x, weight):
     return _project(flat, weight, choice).reshape(*x.shape[:-1], weight.shape[0])
 
 
-def decode_keys(rows):
-    """Shapes selected for ``rows`` decode tokens, largest weight traffic first."""
-    keys = [key for key in _CHOICES if key[1] == rows and key in _VALIDATED]
-    return sorted(keys, key=lambda key: -key[2] * key[3])
-
-
-def options(key, limit=4):
-    """Validated layouts for one shape (None is cuBLAS), fastest in isolation first."""
+def _register(key):
+    # None is cuBLAS. Every listed layout passed the operator checks above.
     ranked = sorted(_VALIDATED.get(key, ()), key=lambda item: item[0])
-    return [config for _, config in ranked[:limit]]
-
-
-def current(key):
-    return _CHOICES[key][0]
-
-
-def select(key, config):
-    """Replace a shape's layout with another validated one; graphs must be recaptured."""
-    assert any(config == known for _, known in _VALIDATED[key])
-    _CHOICES[key] = (config, _CHOICES[key][1])
+    register(
+        ("projection",) + key[1:], key[1], key[2] * key[3], [config for _, config in ranked[:4]],
+        lambda: _CHOICES[key][0], lambda config: _CHOICES.__setitem__(key, (config, _CHOICES[key][1])),
+    )

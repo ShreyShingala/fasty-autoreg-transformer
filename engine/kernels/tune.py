@@ -54,4 +54,29 @@ def pick(key, default, options, launch):
             if elapsed < best_ms * 0.97:
                 best, best_ms = option, elapsed
     _BEST[key] = best
+    # key[1] is the row count for every caller; all options are the same kernel.
+    register(
+        key, key[1], 1, [default, *[option for option in options if option != default]],
+        lambda: _BEST[key], lambda option: _BEST.__setitem__(key, option),
+    )
     return best
+
+
+class Knob:
+    """One frozen-at-warmup choice that the captured decode step can re-judge."""
+
+    def __init__(self, name, rows, weight, options, get, select):
+        self.name, self.rows, self.weight = name, rows, weight
+        self.options, self.get, self.select = options, get, select
+
+
+_KNOBS = {}
+
+
+def register(name, rows, weight, options, get, select):
+    _KNOBS[name] = Knob(name, rows, weight, options, get, select)
+
+
+def knobs(rows):
+    """Knobs of this batch size, largest expected effect first."""
+    return sorted((knob for knob in _KNOBS.values() if knob.rows == rows), key=lambda knob: -knob.weight)
