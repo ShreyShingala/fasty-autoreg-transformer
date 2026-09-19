@@ -1810,3 +1810,18 @@ touch arithmetic or layout choice. Everything since candidate 91 (the mailbox
 numpy view, the incremental sibling membership, the budget trims, the pruning,
 the pipeline depth) is set aside and comes back one per run, each measured
 against this base.
+
+Result (candidate 99, named Triton cache on the candidate-98 tree): commit
+`f02f277` **FAILED - `incorrect_output` on a hidden case** (all three public
+cases passed). Candidate 98, the same tree without the cache, passed. A cache
+directory under `/tmp` shared by six workload processes is a plausible
+mechanism: concurrent writes of the same entry can be read torn. The warmup
+saving is not worth a wrong token, so `TRITON_CACHE_DIR` is REMOVED and must
+not come back without per-process isolation. Candidate 100 carried the same
+change and was cancelled rather than risk a second failed slot.
+
+## Candidate 101 - the 1144.3 tree, byte for byte
+
+`engine/` is now identical to `c758faf`. This is the base every later change is
+measured against, one change per run, across three queues: SSS and Silver
+Bullet take the small single edits, dryfter takes architectural attempts.
