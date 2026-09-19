@@ -1477,3 +1477,14 @@ itself and events take over (no correctness dependence: results are read only
 after the stamp that the stream enqueued after them). Idea seen in a public
 competitor engine (`_drain` pattern). Expected 0-3% at batch 1-4; smoke test
 0 mismatches on speculative and plain shapes, no fallback triggered.
+
+## Candidate 84 - QK-RoPE reads the cos/sin tables in place (held)
+
+The verify pass gathered cos/sin per block token on the host side of the
+graph: a position add and two index kernels per pass, plus two [B, T, 128]
+buffers. `_qk_rope_cache` gains a TABLE mode: with the whole tables and the
+`phases` buffer it reads row b's token t at position[b] + phases[b, t]. Values
+identical (interpreter: query, keys, values bit-exact vs the gathered path);
+both modes compile for cuda:90; smoke test 0 mismatches. Three launches fewer
+per pass (~0.2-0.3%). The PACE_MEDIAN term stays: the pacing simulation put
+its cost at <= 0.05% and it removes ~10% of the residual spread violations.

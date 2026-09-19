@@ -154,5 +154,28 @@ def fused_argmax():
         tied = torch.zeros(m, k).bfloat16(); tied[:, 0] = 1.0; wt = torch.zeros(n, k).bfloat16(); wt[::7, 0] = 1.0  # many exact ties
         report(f"fused_argmax ties m={m} n={n}", kernel(tied, wt), (tied.float() @ wt.float().T).bfloat16().argmax(-1))
 
-which = sys.argv[1:] or ["fused_argmax", "argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention"]
+def qkrope_table():
+    """QK-RoPE reading the whole cos/sin tables at position + phase == the gathered-input path, bit for bit."""
+    from kernels.qk_rope import qk_rope_cache
+    class Norm:
+        def __init__(self, dim): self.weight = (torch.randn(dim) * 0.1 + 1).bfloat16(); self.variance_epsilon = 1e-6
+    B, T, Hq, Hkv, D, C = 2, 4, 4, 2, 64, 90
+    q_norm, k_norm = Norm(D), Norm(D)
+    packed = torch.randn(B, T, (Hq + 2 * Hkv) * D).bfloat16()
+    table_cos = torch.randn(C, D).bfloat16(); table_sin = torch.randn(C, D).bfloat16()
+    position = torch.tensor([10, 50]); phases = torch.tensor([[0, 1, 2, 1], [0, 1, 1, 1]])
+    gathered = position[:, None] + phases
+    outs, caches = [], []
+    for table in (False, True):
+        keys = torch.zeros(B, Hkv, C, D).bfloat16(); values = torch.zeros(B, Hkv, C, D).bfloat16()
+        if table:
+            q = qk_rope_cache(packed, q_norm, k_norm, table_cos, table_sin, position, keys, values, Hq, rows=True, phases=phases)
+        else:
+            q = qk_rope_cache(packed, q_norm, k_norm, table_cos[gathered].contiguous(), table_sin[gathered].contiguous(), position, keys, values, Hq, rows=True)
+        outs.append(q.clone()); caches.append((keys.clone(), values.clone()))
+    report("qk_rope table mode == gathered mode (query)", outs[1], outs[0])
+    report("qk_rope table mode == gathered mode (keys)", caches[1][0], caches[0][0])
+    report("qk_rope table mode == gathered mode (values)", caches[1][1], caches[0][1])
+
+which = sys.argv[1:] or ["qkrope_table", "fused_argmax", "argmax", "qkrope", "splitpath", "rmsnorm", "swiglu", "linear", "attention"]
 for name in which: section(globals()[name])

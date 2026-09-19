@@ -42,14 +42,16 @@ class PackedAttention(torch.nn.Module):
         # partials to the same consumers: 144 merge launches fewer per step.
         split = past_key_value is not None and not past_key_value.prefilling
         packed = linear(hidden_states, self.qkv_weight, split_ok=split)
-        cos, sin = position_embeddings
+        # Two entries: gathered cos/sin. Three: the whole tables plus each
+        # block token's RoPE phase (verify blocks): the kernel reads them in place.
+        cos, sin, *phases = position_embeddings
         if past_key_value is not None:
             key = past_key_value.keys[self.layer_idx]
             value = past_key_value.values[self.layer_idx]
             query = qk_rope_cache(
                 packed, self.q_norm, self.k_norm, cos, sin, cache_position,
                 key, value, self.q_width // self.head_dim,
-                prefill=past_key_value.prefilling, rows=block,
+                prefill=past_key_value.prefilling, rows=block, phases=phases[0] if phases else None,
             )
             if last_token_only:
                 # The final prompt query follows every cached key, so it is

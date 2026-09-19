@@ -414,8 +414,9 @@ class DecodeState:
             self.history, self.row_position, self.block_size, self.drafts_by_match,
             self.model.successor, self.stale, self.chains, self.phases,
         )
-        positions = self.row_position[:, None] + self.phases
-        rope = (self.cos[0][positions], self.sin[0][positions])
+        # Whole tables; the QK-RoPE kernel reads row b's token t at
+        # row_position[b] + phases[b, t] (three host launches fewer per pass).
+        rope = (self.cos[0], self.sin[0], self.phases)
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )

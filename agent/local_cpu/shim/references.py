@@ -114,11 +114,12 @@ def _swiglu(grid, packed, output, WIDTH, BLOCK, COUNT=1, SPLITS=1, **launch):
 def _qk_rope_cache(
     grid, packed, q_weight, k_weight, cos, sin, position, query, keys, values,
     Q_HEADS, KV_HEADS, DIM, CAPACITY, Q_EPS, K_EPS, TOKENS, PREFILL, BLOCK,
-    ROWS=False, COUNT=1, SPLITS=1, **launch,
+    ROWS=False, COUNT=1, SPLITS=1, phases=None, TABLE=False, **launch,
 ):
     rows = grid[0]
     assert grid[1] == Q_HEADS + KV_HEADS and BLOCK >= DIM and rows % TOKENS == 0
     batch = rows // TOKENS
+    assert not TABLE or (ROWS and phases is not None)
     heads = Q_HEADS + 2 * KV_HEADS
     data = merged(packed, rows * heads * DIM, COUNT, SPLITS).view(rows, heads, DIM)
     x = data[:, :Q_HEADS + KV_HEADS].to(F32)
@@ -131,11 +132,19 @@ def _qk_rope_cache(
     weighted = (normalized * gain).to(BF16).to(F32)
     half = DIM // 2
     rotated = torch.cat((-weighted[..., half:], weighted[..., :half]), dim=-1)
-    phases = rows if ROWS else TOKENS
-    cosine = flat(cos, phases * DIM).view(phases, DIM).to(F32)
-    sine = flat(sin, phases * DIM).view(phases, DIM).to(F32)
-    if not ROWS:
-        cosine, sine = cosine.repeat(batch, 1), sine.repeat(batch, 1)
+    if TABLE:
+        # Whole tables, indexed at position[b] + phases[b, t] per row.
+        where = flat(position, batch).to(torch.int64)
+        offsets = where.repeat_interleave(TOKENS) + flat(phases, rows).to(torch.int64)
+        table = CAPACITY + 64  # the tables cover at least the capacity; read only what is indexed
+        cosine = flat(cos, int(offsets.max()) * DIM + DIM).view(-1, DIM).to(F32)[offsets]
+        sine = flat(sin, int(offsets.max()) * DIM + DIM).view(-1, DIM).to(F32)[offsets]
+    else:
+        count = rows if ROWS else TOKENS
+        cosine = flat(cos, count * DIM).view(count, DIM).to(F32)
+        sine = flat(sin, count * DIM).view(count, DIM).to(F32)
+        if not ROWS:
+            cosine, sine = cosine.repeat(batch, 1), sine.repeat(batch, 1)
     direct = (weighted * cosine[:, None, :]).to(BF16).to(F32)
     turn = (rotated * sine[:, None, :]).to(BF16).to(F32)
     result = (direct + turn).to(BF16)
