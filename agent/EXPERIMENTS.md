@@ -691,6 +691,18 @@ batch 1 -> 9+7, 2 -> 5+3, 3 -> 4+1, 4 -> 3+1, 5 -> 2+1, 6-16 -> 2+0. Supersedes 
 shapes of candidates 28 and 30 (which are still queued and will show what
 32-row blocks cost at batch 2).
 
+Lab note: choosing the block shape per step from the suffix-match length
+(deep chain after a 3-token match, wide alternatives after none) saves 1-3% of
+passes on the fitting data; needs data-driven masks. Parked.
+
+## Candidate 33 — verify-graph refinement of projection tiles
+
+At batch 4 a 16-row verify pass costs about 12-15% more than a plain step.
+Suspect: the skinny GEMM reloads its x block per output tile (16 live rows x
+128 against 64 x 128 weights = 25% extra traffic). Added 128- and 256-column
+tiles for blocks of more than 4 rows and re-added in-situ refinement, now
+timing the captured verify graph itself (12 s bound, 1% threshold).
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

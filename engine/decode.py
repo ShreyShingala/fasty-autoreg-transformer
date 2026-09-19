@@ -14,6 +14,7 @@ from kernels.decode_attention import decode_attention
 from kernels.linear import linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
+from kernels.tune import knobs
 from layers import PackedAttention, PackedMLP
 from kernels import spec
 
@@ -247,6 +248,7 @@ class DecodeState:
         self.capture_prefill()
         if self.speculative:
             self.capture_speculation()
+            self.refine()
         elif output_length > 1:
             self.capture()
 
@@ -338,6 +340,28 @@ class DecodeState:
         self.history.zero_()
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
         self.pace_seconds = PACE_FLOOR * self.pass_seconds
+
+    def refine(self, seconds=12.0):
+        """Keep a projection layout for the verify block only if the real pass gets faster.
+
+        Isolated timings pick the starting layouts; here each validated
+        alternative is swapped into the captured verify graph itself. Every
+        option already passed the operator checks, so only speed is decided,
+        during warmup; the final graph is fixed before any measured sample.
+        """
+        deadline = time.monotonic() + seconds
+        best = self.pass_seconds
+        for knob in knobs(self.shape[0] * self.block_size):
+            chosen = knob.get()
+            for option in knob.options:
+                if option == chosen or time.monotonic() >= deadline:
+                    continue
+                knob.select(option)
+                self.capture_speculation()
+                if self.pass_seconds < best * 0.99:
+                    best, chosen = self.pass_seconds, option
+            knob.select(chosen)
+        self.capture_speculation()
 
     def absorb(self, wait):
         """Bank finished passes; with ``wait``, block for the oldest one first."""

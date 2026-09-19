@@ -143,10 +143,18 @@ _SHAPE_SECONDS = 8.0
 def _candidates(m, n, k):
     """Official runs: wider tile searches, lossless 12-bit planes and word-sized
     loads never beat these in the captured step, so keep the list short."""
-    splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, 64))))
-    configs = [("gemm", 64, 128, splits, 4)]
+    def gemm(block_n, block_k):
+        splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
+        return ("gemm", block_n, block_k, splits, 4)
+
+    configs = [gemm(64, 128)]
     if m == 1:
         configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4)]
+    elif m > 4:
+        # Verify blocks fill most of the 16/32 input rows, so every tile reloads
+        # a large x block: wider output tiles amortize it. Judged in the real
+        # verify graph (DecodeState.refine), not only in isolation.
+        configs += [gemm(128, 128), gemm(256, 128)]
     return configs
 
 
