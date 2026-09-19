@@ -11,7 +11,8 @@ from datetime import datetime
 REFERENCE = (202.3, 192.0)  # candidate 57 (c096f57): native TTFT on public-1 / public-2, ms
 
 rows = []
-for path in glob.glob("../results/*.json"):
+import os
+for path in glob.glob(os.environ.get("RESULTS", "../results") + "/*.json"):
     if path.endswith(".logs.json"):
         continue
     run = json.load(open(path))

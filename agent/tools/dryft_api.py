@@ -6,8 +6,14 @@ for line in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 
     if '=' in line and not line.startswith('#'):
         k, v = line.split('=', 1); env[k.strip().removeprefix('export ').strip()] = v.strip().strip('"\'')
 BASE = env.get('DRYFT_API', 'https://htn.dryft.ai').rstrip('/')
+#: Which team's queue to read. "" is ours (SSS); "MATE" is dryfter's, whose
+#: token the user supplied so a dispatched candidate reports per-workload
+#: numbers instead of only moving that team's leaderboard best.
+TEAM = os.environ.get('DRYFT_TEAM', '').upper()
+def token():
+    return env['DRYFT_TOKEN_' + TEAM] if TEAM else env['DRYFT_TOKEN']
 def get(path):
-    req = urllib.request.Request(BASE + path, headers={'Authorization': 'Bearer ' + env['DRYFT_TOKEN'], 'Accept': 'application/json'})
+    req = urllib.request.Request(BASE + path, headers={'Authorization': 'Bearer ' + token(), 'Accept': 'application/json'})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read() or b'{}')

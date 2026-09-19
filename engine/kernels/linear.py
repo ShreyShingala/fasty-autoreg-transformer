@@ -351,8 +351,20 @@ _SHAPE_SECONDS = 6.0
 def _candidates(m, n, k):
     """Official runs: wider tile searches, lossless 12-bit planes and word-sized
     loads never beat these in the captured step, so keep the list short."""
+    #: Programs a split-K launch aims for. Every split writes the whole [m, n]
+    #: tile as FP32 and the merge reads it back, so the partial traffic is
+    #: proportional to this: at m=16 the four projections cost 594 MB a pass at
+    #: 512 and 151 MB at 128, and 444 MB is 0.13 ms of a 3.35 TB/s bus. The
+    #: floor is set by bytes in flight, not by filling the machine: 3.352 TB/s
+    #: over a ~600 ns load-to-use needs ~2 MB resident, about 123 CTAs of a
+    #: 16 KB staged tile. 128 keeps every projection above that (qkv 192,
+    #: o/down 160, gate_up 304 with no partials and no merge at all) while the
+    #: compiled residency limit is 1056 slots for this kind (64 registers over
+    #: 128 threads binds before its 20 KB of shared memory does).
+    PROGRAMS = 128
+
     def gemm(block_n, block_k):
-        splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
+        splits = min(8, triton.next_power_of_2(triton.cdiv(PROGRAMS, triton.cdiv(n, block_n))))
         return ("gemm", block_n, block_k, splits, 4)
 
     def tiled(kind, block_n, block_k):
