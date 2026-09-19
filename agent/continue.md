@@ -2,8 +2,8 @@
 
 ## State (2026-09-19, ~17:50 UTC)
 
-**Leaderboard #1: 1129.7 tokens/s** (commit `c096f57`, candidate 57; whole run
-815 s against the 900 s cap). Silver Bullet 1112.7 (fork
+**Leaderboard #1: 1130.6 tokens/s** (commit `822ce98`, candidate 67: TMA GEMM kind +
+warmup bundle; whole run 612 s against the 900 s cap; previous best c57 1129.7). Silver Bullet 1112.7 (fork
 `sivakovivan/silver-transformer`, tracks our main, consented to idea sharing;
 their one idea - refine each block size before comparing - is in c60), dryfter
 1087.3 (`john-jpet/fast-transformer`), zip 1059.4. User target: 1200.
