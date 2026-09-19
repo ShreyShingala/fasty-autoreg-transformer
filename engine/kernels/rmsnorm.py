@@ -73,7 +73,7 @@ def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
 def _add_rms_norm_kernel(
     x_ptr, residual_ptr, w_ptr, out_ptr, sum_ptr,
     WIDTH: tl.constexpr, EPS: tl.constexpr, BLOCK: tl.constexpr,
-    COUNT: tl.constexpr = 1, SPLITS: tl.constexpr = 1,
+    COUNT=1, SPLITS: tl.constexpr = 1,
 ):
     row = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK)

@@ -9,7 +9,7 @@ from kernels.tune import pick
 
 
 @triton.jit
-def _swiglu(packed, output, WIDTH: tl.constexpr, BLOCK: tl.constexpr, COUNT: tl.constexpr = 1, SPLITS: tl.constexpr = 1):
+def _swiglu(packed, output, WIDTH: tl.constexpr, BLOCK: tl.constexpr, COUNT=1, SPLITS: tl.constexpr = 1):
     # One program per (row, column block): no per-element division.
     row = tl.program_id(0).to(tl.int64)
     column = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)

@@ -14,7 +14,7 @@ def _qk_rope_cache(
     Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr, DIM: tl.constexpr,
     CAPACITY: tl.constexpr, Q_EPS: tl.constexpr, K_EPS: tl.constexpr,
     TOKENS: tl.constexpr, PREFILL: tl.constexpr, BLOCK: tl.constexpr,
-    ROWS: tl.constexpr = False, COUNT: tl.constexpr = 1, SPLITS: tl.constexpr = 1,
+    ROWS: tl.constexpr = False, COUNT=1, SPLITS: tl.constexpr = 1,
 ):
     row = tl.program_id(0).to(tl.int64)
     batch = row // TOKENS
