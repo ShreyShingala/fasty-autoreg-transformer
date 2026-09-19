@@ -19,30 +19,30 @@ from layers import PackedAttention, PackedMLP
 from kernels import spec
 
 def block_shape(batch):
-    """(chain tokens incl. the trusted one, alternatives to draft 1) per row, from the batch size alone.
+    """(tokens per row, chain drafts by matched-suffix length 0-1 / 2-3 / 4-7 / 8+), from the batch size alone.
 
-    Official runs: a pass of up to 16 rows costs about one ordinary step (4.2 ms
-    at batch one even with 16 tokens), but at batch 4 a 32-row pass cost 17%
-    more than a 16-row one and lost to it (TPOT 4.21 vs 3.98 ms), so blocks
-    stay within 16 rows wherever that leaves at least one draft; batches 9-16
-    take one draft at 18-32 rows, which still paid (candidate 24). Offline
-    replays: at 8 tokens per row 4 drafts + 3 alternatives beat 7 drafts, at 16
-    8 + 7 is best, at 3-4 one alternative beats one more chain token.
-    (1, 0) means no speculation.
+    Official runs: a pass of up to 16 rows costs about one ordinary step, a
+    32-row pass at batch 4 about 17% more (and lost), so blocks stay within 16
+    rows wherever that leaves a draft; batches 9-16 take one draft at 18-32
+    rows, which still paid. The rest of a row's block (tokens - 1 - drafts) are
+    alternatives to draft 1. Offline replays of the model's greedy text (192
+    samples, six corpora): a long suffix match earns a deep chain and no match
+    earns wide alternatives, 1.4-3.6% fewer passes than the best fixed split.
+    One token per row means no speculation.
     """
     if batch == 1:
-        return 9, 7
+        return 16, (5, 8, 13, 14)
     if batch == 2:
-        return 5, 3
+        return 8, (2, 4, 6, 7)
     if batch == 3:
-        return 4, 1
+        return 5, (2, 3, 4, 4)
     if batch == 4:
-        return 3, 1
+        return 4, (1, 2, 3, 3)
     if batch == 5:
-        return 2, 1
+        return 3, (1, 2, 2, 2)
     if batch <= 16:
-        return 2, 0
-    return 1, 0
+        return 2, (1, 1, 1, 1)
+    return 1, (0, 0, 0, 0)
 
 
 #: Verify passes queued behind the GPU.
@@ -180,8 +180,7 @@ class DecodeState:
         # Verify a few proposed tokens per pass (speculate.py). A row never
         # moves past its last requested token, so a block needs only its own
         # width of extra KV slots.
-        self.chain, self.siblings = block_shape(batch)
-        self.block_size = self.chain + self.siblings
+        self.block_size, self.drafts_by_match = block_shape(batch)
         self.speculative = self.block_size > 1 and output_length > 2 and hasattr(model, "successor")
         if self.speculative:
             self.capacity += self.block_size
@@ -261,14 +260,14 @@ class DecodeState:
         size = self.capacity + 2
         self.history = torch.zeros((batch, size), dtype=torch.int64, device=self.device)
         self.history_index = torch.arange(size, device=self.device)
-        # RoPE phase of each block token: the chain counts up, alternatives
-        # all stand where draft 1 stands. (KV slots are simply position + t.)
-        self.phase = torch.tensor(
-            list(range(self.chain)) + [1] * self.siblings, dtype=torch.int64, device=self.device
-        )
+        # Filled by every pass: each row's chain length (trusted token included)
+        # and each block token's RoPE offset (the chain counts up, alternatives
+        # stand where draft 1 stands). KV slots are simply position + t.
+        self.chains = torch.ones(batch, dtype=torch.int64, device=self.device)
+        self.phases = torch.zeros((batch, tokens), dtype=torch.int64, device=self.device)
         self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
         self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
-        self.cache.chain = self.chain
+        self.cache.chain = self.chains
         self.row_position = torch.full((batch,), prompt_length, dtype=torch.int64, device=self.device)
         # Index of the last requested token: rows stop there.
         self.limit = torch.full((batch,), prompt_length + output_length - 1, dtype=torch.int64, device=self.device)
@@ -296,10 +295,11 @@ class DecodeState:
     def speculate(self):
         """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
         tokens = spec.propose(
-            self.history, self.row_position, self.chain - 1, self.siblings, self.model.successor
+            self.history, self.row_position, self.block_size, self.drafts_by_match,
+            self.model.successor, self.chains, self.phases,
         )
-        phases = self.row_position[:, None] + self.phase[None, :]
-        rope = (self.cos[0][phases], self.sin[0][phases])
+        positions = self.row_position[:, None] + self.phases
+        rope = (self.cos[0][positions], self.sin[0][positions])
         logits = forward_last(
             self.model, tokens, self.cache, self.row_position, rope, every=True
         )
@@ -308,9 +308,9 @@ class DecodeState:
         # never past the last requested token; record it; move each row.
         spec.settle(
             tokens, greedy, self.row_position, self.limit, self.history, self.result,
-            self.move_from, self.move_to, self.chain,
+            self.move_from, self.move_to, self.chains,
         )
-        if self.siblings:
+        if min(self.drafts_by_match) < self.block_size - 1:
             spec.relocate(self.cache.store, self.move_from, self.move_to)
 
     def capture_speculation(self):

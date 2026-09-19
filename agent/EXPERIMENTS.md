@@ -731,6 +731,19 @@ timing the captured verify graph itself (12 s bound, 1% threshold).
 
 ## Candidate 34 — pace floor 0.70, lower running median
 
+## Candidate 35 — block shape from the matched-suffix length
+
+`_propose` matches suffixes up to 8 tokens and sets each row's chain depth per
+pass from the match length (0-1 / 2-3 / 4-7 / 8+); the rest of the block are
+alternatives. Chain length is now per-row data in `_propose`, `_settle` and
+`_block_partials` (tensor instead of constexpr); phases come from the kernel.
+Maps: 16 tokens (5,8,13,14); 8 (2,4,6,7); 5 (2,3,4,4); 4 (1,2,3,3); 3
+(1,2,2,2); 2 (1,1,1,1). Offline on 192 fresh samples: -1.4 to -3.6% passes at
+every block size versus the best fixed split. Emulation of the new formulas
+with a toy model and slot-level cache model: equal to sequential greedy in 400
+cases, 17 distinct shapes, 959 alternative branches; kernels compile for
+`cuda:90`.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

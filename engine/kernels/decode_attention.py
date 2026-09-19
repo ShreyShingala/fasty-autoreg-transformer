@@ -217,11 +217,10 @@ def decode_attention(query, key, value, position, scale):
 
 @triton.jit
 def _block_partials(
-    q_ptr, k_ptr, v_ptr, position_ptr, partial_ptr, stats_ptr,
+    q_ptr, k_ptr, v_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr,
     TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
     DIM: tl.constexpr, CAPACITY: tl.constexpr, SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     SCALE: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-    CHAIN: tl.constexpr = 1 << 30,
 ):
     """Interval softmax for the TOKENS successive queries of one row and KV head.
 
@@ -245,7 +244,7 @@ def _block_partials(
     # Tokens below CHAIN form a causal chain. Later tokens are alternative
     # first drafts: each sees the prefix through the trusted token and its own
     # slot only, never the chain or another alternative.
-    chained = token < CHAIN
+    chained = token < tl.load(chain_ptr + row)
     valid = first + tl.where(chained, token, 0).to(tl.int32)
     own = tl.where(chained, -1, first - 1 + token.to(tl.int32))
     begin = split * CHUNK
@@ -307,10 +306,10 @@ def _block_merge(
     tl.store(out_ptr + index * DIM + dims, numerator / denominator)
 
 
-def block_attention(query, key, value, position, scale, chain=None):
+def block_attention(query, key, value, position, scale, chain):
     """Verify blocks: token-major Q [B,T,Hq,D], KV [B,Hkv,C,D], position [B] -> [B,T,Hq,D].
 
-    Token t of row b occupies slot ``position[b] + t``. The first ``chain``
+    Token t of row b occupies slot ``position[b] + t``. The first ``chain[b]``
     tokens attend causally; the rest are alternatives to token 1 and attend to
     the prefix through token 0 plus themselves. The block's own keys must
     already be in the cache.
@@ -322,6 +321,7 @@ def block_attention(query, key, value, position, scale, chain=None):
     assert query.is_contiguous() and key.is_contiguous() and value.is_contiguous()
     assert value.shape == key.shape and key.shape[3] == dim and dim in (64, 128)
     assert position.shape == (batch,) and position.dtype == torch.int64
+    assert chain.shape == (batch,) and chain.dtype == torch.int64
     groups = query_heads // kv_heads
     members = tokens * groups
     block_n, splits, warps = _default_config(batch, kv_heads, capacity)
@@ -330,11 +330,11 @@ def block_attention(query, key, value, position, scale, chain=None):
     stats = torch.empty((batch * kv_heads, splits, members, 2), device=query.device, dtype=torch.float32)
     out = torch.empty((batch, tokens, query_heads, dim), device=query.device, dtype=query.dtype)
     _block_partials[(batch * kv_heads, splits)](
-        query, key, value, position, partial, stats,
+        query, key, value, position, chain, partial, stats,
         TOKENS=tokens, GROUPS=groups, Q_HEADS=query_heads, KV_HEADS=kv_heads,
         DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk, SCALE=scale,
         BLOCK_M=max(16, triton.next_power_of_2(members)), BLOCK_N=block_n,
-        CHAIN=tokens if chain is None else chain, num_warps=warps, num_stages=2,
+        num_warps=warps, num_stages=2,
     )
     _block_merge[(batch * tokens * query_heads,)](
         partial, stats, out,

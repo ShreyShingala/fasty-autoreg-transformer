@@ -13,47 +13,58 @@ import triton.language as tl
 
 @triton.jit
 def _propose(
-    history, position, successor, tokens,
-    SIZE: tl.constexpr, DRAFTS: tl.constexpr, SIBLINGS: tl.constexpr, ALTERNATES: tl.constexpr,
-    TOP: tl.constexpr, BLOCK: tl.constexpr, BLOCK_S: tl.constexpr,
+    history, position, successor, tokens, chains, phases,
+    SIZE: tl.constexpr, TOKENS: tl.constexpr, MAXLEN: tl.constexpr,
+    D0: tl.constexpr, D1: tl.constexpr, D2: tl.constexpr, D3: tl.constexpr,
+    LANES: tl.constexpr, ALTERNATES: tl.constexpr,
+    TOP: tl.constexpr, BLOCK: tl.constexpr, BLOCK_S: tl.constexpr, BLOCK_T: tl.constexpr,
 ):
-    """Row layout: trusted token, DRAFTS chain drafts, SIBLINGS alternatives to draft 1."""
+    """Row layout: trusted token, D chain drafts, TOKENS - 1 - D alternatives to draft 1.
+
+    D depends on how long a suffix of the row was found earlier in it (0-1,
+    2-3, 4-7 or 8+ tokens -> D0..D3): a long match earns a deep chain, no match
+    earns wide alternatives. ``chains`` gets 1 + D, ``phases`` each token's
+    RoPE offset (the chain counts up; alternatives stand where draft 1 stands).
+    """
     row = tl.program_id(0).to(tl.int64)
     base = history + row * SIZE
     place = tl.load(position + row)
     last = tl.load(base + place)
-    before = tl.load(base + tl.maximum(place - 1, 0))
-    earlier = tl.load(base + tl.maximum(place - 2, 0))
     index = tl.arange(0, BLOCK).to(tl.int64)
     inside = index < SIZE
     here = tl.load(base + index, inside, other=-1)
-    back1 = tl.load(base + index - 1, inside & (index >= 1), other=-1)
-    back2 = tl.load(base + index - 2, inside & (index >= 2), other=-1)
-    # An earlier occurrence of the current suffix, ending before the position.
+    # Earlier occurrences of the newest token, and how far back each agrees.
     one = inside & (index < place) & (here == last)
-    two = one & (index >= 1) & (back1 == before) & (place >= 1)
-    three = two & (index >= 2) & (back2 == earlier) & (place >= 2)
+    agree = one
+    length = one.to(tl.int64)
+    for back in tl.static_range(1, MAXLEN):
+        wanted = tl.load(base + tl.maximum(place - back, 0))
+        seen = tl.load(base + index - back, inside & (index >= back), other=-1)
+        agree = agree & (index >= back) & (place >= back) & (seen == wanted)
+        length += agree.to(tl.int64)
     # Longer suffix first, then the most recent occurrence.
-    rank = tl.where(three, index + 2 * SIZE, tl.where(two, index + SIZE, tl.where(one, index, -1)))
+    rank = tl.where(one, index + (length - 1) * SIZE, -1)
     best = tl.max(rank, axis=0)
     found = best >= 0
     start = tl.where(found, best % SIZE, place)
-    out = tokens + row * (1 + DRAFTS + SIBLINGS)
+    matched = tl.where(found, best // SIZE + 1, 0)
+    drafts = tl.where(matched <= 1, D0, tl.where(matched <= 3, D1, tl.where(matched <= 7, D2, D3)))
+    out = tokens + row * TOKENS
     tl.store(out, last)
     previous = last
     first = last
-    for step in tl.static_range(1, DRAFTS + 1):
+    for step in tl.static_range(1, TOKENS):
         source = start + step
         copied = tl.load(base + tl.minimum(source, SIZE - 1))
         followed = tl.load(successor + previous * TOP)
         draft = tl.where(found & (source <= place), copied, followed)
-        tl.store(out + step, draft)
+        tl.store(out + step, draft, mask=drafts >= step)
         previous = draft
         if step == 1:
             first = draft
-    if SIBLINGS > 0:
+    if LANES > 0:
         # Other candidates for draft 1: what followed other occurrences of the
-        # suffix, then the table's next choices; all distinct from draft 1.
+        # newest token, then the table's next choices; all distinct from draft 1.
         lanes = tl.arange(0, BLOCK_S)
         siblings = tl.full((BLOCK_S,), -1, tl.int64)
         count = tl.zeros((), tl.int32)
@@ -61,43 +72,55 @@ def _propose(
         for _ in tl.static_range(ALTERNATES):
             taken = (after == first) | (tl.sum((after[:, None] == siblings[None, :]).to(tl.int32), axis=1) > 0)
             choice = tl.max(tl.where(one & (taken == 0), rank, -1), axis=0)
-            usable = (choice >= 0) & (count < SIBLINGS)
+            usable = (choice >= 0) & (count < LANES)
             candidate = tl.load(base + tl.maximum(choice, 0) % SIZE + 1)
             siblings = tl.where((lanes == count) & usable, candidate, siblings)
             count += usable.to(tl.int32)
         for entry in tl.static_range(TOP):
             candidate = tl.load(successor + last * TOP + entry)
             fresh = (candidate != first) & (tl.sum((siblings == candidate).to(tl.int32), axis=0) == 0)
-            usable = fresh & (count < SIBLINGS)
+            usable = fresh & (count < LANES)
             siblings = tl.where((lanes == count) & usable, candidate, siblings)
             count += usable.to(tl.int32)
         # An unfilled lane repeats draft 1, which can never be accepted twice.
-        tl.store(out + 1 + DRAFTS + lanes, tl.where(siblings >= 0, siblings, first), lanes < SIBLINGS)
+        tl.store(
+            out + 1 + drafts + lanes, tl.where(siblings >= 0, siblings, first),
+            (lanes < LANES) & (1 + drafts + lanes < TOKENS),
+        )
+    slot = tl.arange(0, BLOCK_T).to(tl.int64)
+    tl.store(chains + row, 1 + drafts)
+    tl.store(phases + row * TOKENS + slot, tl.where(slot <= drafts, slot, 1), slot < TOKENS)
 
 
-def propose(history, position, drafts, siblings, successor):
-    """Per row: trusted token, ``drafts`` chain drafts, ``siblings`` alternatives (int64 [B, T])."""
+def propose(history, position, tokens_per_row, drafts_by_match, successor, chains, phases):
+    """Per row: trusted token, chain drafts, alternatives (int64 [B, T]); fills ``chains`` and ``phases``."""
     batch, size = history.shape
     assert history.is_contiguous() and history.dtype == position.dtype == successor.dtype == torch.int64
-    assert position.shape == (batch,) and successor.dim() == 2 and successor.is_contiguous() and drafts >= 1
-    tokens = torch.empty((batch, 1 + drafts + siblings), dtype=torch.int64, device=history.device)
+    assert position.shape == (batch,) and successor.dim() == 2 and successor.is_contiguous()
+    assert chains.shape == (batch,) and phases.shape == (batch, tokens_per_row) and phases.is_contiguous()
+    assert len(drafts_by_match) == 4 and all(1 <= d <= tokens_per_row - 1 for d in drafts_by_match)
+    lanes = tokens_per_row - 1 - min(drafts_by_match)
+    tokens = torch.empty((batch, tokens_per_row), dtype=torch.int64, device=history.device)
     _propose[(batch,)](
-        history, position, successor, tokens,
-        SIZE=size, DRAFTS=drafts, SIBLINGS=siblings, ALTERNATES=min(siblings, 3),
-        TOP=successor.shape[1], BLOCK=triton.next_power_of_2(size),
-        BLOCK_S=triton.next_power_of_2(max(siblings, 1)), num_warps=4,
+        history, position, successor, tokens, chains, phases,
+        SIZE=size, TOKENS=tokens_per_row, MAXLEN=8,
+        D0=drafts_by_match[0], D1=drafts_by_match[1], D2=drafts_by_match[2], D3=drafts_by_match[3],
+        LANES=lanes, ALTERNATES=min(lanes, 3), TOP=successor.shape[1],
+        BLOCK=triton.next_power_of_2(size), BLOCK_S=triton.next_power_of_2(max(lanes, 1)),
+        BLOCK_T=triton.next_power_of_2(tokens_per_row), num_warps=4,
     )
     return tokens
 
 
 @triton.jit
 def _settle(
-    tokens, greedy, position, limit, history, result, move_from, move_to,
-    SIZE: tl.constexpr, TOKENS: tl.constexpr, CHAIN: tl.constexpr, BLOCK: tl.constexpr,
+    tokens, greedy, position, limit, history, result, move_from, move_to, chains,
+    SIZE: tl.constexpr, TOKENS: tl.constexpr, BLOCK: tl.constexpr,
 ):
     row = tl.program_id(0).to(tl.int64)
     slot = tl.arange(0, BLOCK).to(tl.int64)
     inside = slot < TOKENS
+    CHAIN = tl.load(chains + row)
     draft = tl.load(tokens + row * TOKENS + slot, inside, other=0)
     chosen = tl.load(greedy + row * TOKENS + slot, inside, other=0)
     expected = tl.load(greedy + row * TOKENS + slot - 1, inside & (slot >= 1), other=0)
@@ -125,16 +148,16 @@ def _settle(
     tl.store(position + row, place + gained)
 
 
-def settle(tokens, greedy, position, limit, history, result, move_from, move_to, chain):
+def settle(tokens, greedy, position, limit, history, result, move_from, move_to, chains):
     """Accept, clamp at ``limit``, record emitted tokens, plan the KV move, advance; in place."""
     batch, count = tokens.shape
     assert tokens.is_contiguous() and greedy.is_contiguous() and history.is_contiguous() and result.is_contiguous()
-    assert greedy.shape == tokens.shape and result.shape == (batch, count + 1) and 1 <= chain <= count
+    assert greedy.shape == tokens.shape and result.shape == (batch, count + 1) and chains.shape == (batch,)
     assert tokens.dtype == greedy.dtype == position.dtype == limit.dtype == history.dtype == result.dtype == torch.int64
     assert move_from.dtype == move_to.dtype == torch.int64 and move_from.shape == move_to.shape == (batch,)
     _settle[(batch,)](
-        tokens, greedy, position, limit, history, result, move_from, move_to,
-        SIZE=history.shape[1], TOKENS=count, CHAIN=chain, BLOCK=triton.next_power_of_2(count), num_warps=1,
+        tokens, greedy, position, limit, history, result, move_from, move_to, chains,
+        SIZE=history.shape[1], TOKENS=count, BLOCK=triton.next_power_of_2(count), num_warps=1,
     )
 
 
