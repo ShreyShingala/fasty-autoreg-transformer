@@ -16,35 +16,30 @@ at batch 1); c66 1112.9 (warmup bundle: run 815 -> 763 s); **c67 `822ce98`
 1130.6 BEST, 612 s** (TMA descriptor-load GEMM kind + refine on the three
 fastest layouts + runtime COUNT + shared-newline successor table; batch-4 TPOT
 -7%, batch-16 -4%).
-**BEST: 1140.0 (candidate 85, `53e4a7a`), and Silver Bullet's copy of the same
-tree drew 1137.7 - the level is real.** Leaderboard: SSS 1140.0, Silver Bullet
-1137.7, dryfter 1123.9, zip 1059.4.
-What c85 was: PDL off + fused lm_head/argmax knob + pinned-memory completion
-stamps + in-place RoPE tables, on top of the TMA GEMM kinds. 648 s.
-Since then: c86+87 1117.3 normalized (-1.6%: the plain-decode attention search
-above batch 16 was reverted, the pacing measurement kept); c88 1114.8 (the
-embedding+norm fusion is neutral on its own, still carrying c86).
-Measuring: c90 `6d93ee0` (c86 reverted + numpy views for pinned reads + a
-third pass in flight above batch 2). Queued: c91 (warp-width knobs for 17-64
-row blocks and the embedding norm).
+**BEST: 1140.0 (candidate 85, `53e4a7a`).** Silver Bullet's copy of that tree
+drew 1137.7 and dryfter's dispatch drew 1136.5, so the level is real and all
+three queues are now ours. Leaderboard: SSS 1140.0, Silver Bullet 1137.7,
+dryfter 1136.5, zip 1059.4.
+c85 = PDL off + fused lm_head/argmax knob + pinned-memory completion stamps +
+in-place RoPE tables, on the TMA GEMM kinds. 648 s of the 900 s limit.
+EVERYTHING SINCE HAS BEEN 1.2-1.6% BELOW IT and has been bisected down:
+c86 (plain-decode attention search above batch 16) reverted; c89's third pass
+in flight reverted (it delayed the next sample's prefill: public-1/2 TPOT rose
+1-2%); c87 (pacing pass time = fastest of five back-to-back groups) and c88
+(embedding gather fused into the first norm) measured neutral and stay.
+Measuring: c91 `c758faf` (warp-width knobs for 17-64-row blocks and the
+embedding norm). Queued: c93 `44edf62` (the lookahead revert + refinement
+budget 16 -> 24 s). **If c93 does not come back to ~1135 normalized, the next
+step is to diff `44edf62` against `53e4a7a` and drop c87/c88 too - i.e. return
+to the exact 1140 tree and rebuild from there one change per run.**
 MERGED TEAM: dryfter (`john-jpet/fast-transformer`) and Silver Bullet
-(`sivakovivan/silver-transformer`) are extra run queues; we have push access
-but THIS session's classifier blocks pushes to their main, so the user runs
-them with `! git fetch ... && git push ... $(git commit-tree <sha>^{tree} -p
-<sha> -p <their>/main -m "...") :refs/heads/main`. Their results are visible
-ONLY as their leaderboard best. A targeted `Bash(git push:*)` permission rule
-would let the loop dispatch to all three queues by itself.
-Dead offline today (no runs spent): alignment hints (no PTX change), mask-free
-RMSNorm rewrite (doubles reads), and everything in the earlier dead list.
-Research in flight (reports land in `~/.cache/fasty-lab/plan/`):
-whole_system_review.md, triton31_hopper_features.md (source audit: TMA for
-attention K/V tiles, loop prefetch, num_ctas...), web_hopper_triton.md,
-exa_hopper_research.md (Exa API key in the scratchpad file `.exa_key`, user
-supplied; official Triton docs have "TMA in Gluon" and "Warp-Group MMA"
-tutorials). The organisers (Isaac) are raising GPU concurrency: queue waits
-should shrink. A self-scheduled cron tick (every 7 min, session-only) drives
-the loop; forks `john-jpet/fast-transformer` (dryfter, 1123.9 = our c57) and
-`sivakovivan/silver-transformer` copy our main within the hour.
+(`sivakovivan/silver-transformer`) are extra run queues; we have push access.
+Dispatch without rewriting their history:
+`git fetch <url> +main:refs/remotes/X/main && git push <url> $(git commit-tree
+<our-sha>^{tree} -p <our-sha> -p X/main -m "...") :refs/heads/main`.
+Their results are visible ONLY as their leaderboard best.
+Dead offline today (no runs spent): alignment hints (no PTX change at all),
+mask-free RMSNorm rewrite (doubles reads per row).
 READ RESULTS WITH `cd agent/tools && python3 collect_runs.py | tail -1 && python3 report_runs.py`:
 one line per run with duration, the node-speed control (native prefill TTFT),
 the NORMALIZED score and public TTFT/TPOT probes. Normalized, c57 1129.7, c58
