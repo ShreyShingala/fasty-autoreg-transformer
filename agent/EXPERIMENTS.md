@@ -1088,3 +1088,16 @@ Result (candidate 53): commit `6334ff5` succeeded, **1097.7** - new best, #1;
 public 306.1 / 536.0 / 3240.8; whole run 817 s (c48: 710 s, c52: canceled at
 917 s). Keep. The GEMM tiles + inheritance cost ~100 s of run time for ~+0.2%
 (within noise of c48) - candidate 54's budget trims must bring the time down.
+
+Result (candidate 54): commit `6a30231` succeeded, **1115.0** - new best, #1
+(+1.6% over c53); public 317.3 / 529.3 / 3175.9; whole run 777 s (c53: 817 s).
+Two-stage Triton argmax + tuning budgets 24 -> 18 s and refine 14 -> 10 s.
+public-0 +3.7% (batch 1 sits on the pacing floor = pass time, so the argmax
+cut converts 1:1); public-1/2 within noise. Keep.
+
+## Candidate 58 - 32 MiB cuBLAS workspace (blind single change on top of c57)
+
+`CUBLAS_WORKSPACE_CONFIG=:32768:2` set before the first matmul (PyTorch's
+default is ~8 MiB; NVIDIA recommends 32 MiB on Hopper). Could let cuBLAS pick
+faster GEMM algorithms for prefill and for 64-row verify blocks. Read-out:
+TTFT on all public cases, TPOT on public-2.
