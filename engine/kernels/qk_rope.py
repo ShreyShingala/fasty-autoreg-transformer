@@ -47,7 +47,7 @@ def _qk_rope_cache(
     turn = (rotated * sine).to(tl.bfloat16).to(tl.float32)
     result = direct + turn
     if head < Q_HEADS:
-        tl.store(query + ((batch * Q_HEADS + head) * TOKENS + token) * DIM + col, result, valid)
+        tl.store(query + (row * Q_HEADS + head) * DIM + col, result, valid)
     else:
         kv_head = head - Q_HEADS
         if PREFILL:
@@ -65,7 +65,8 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
     """BF16 packed QKV and [B,Hkv,C,D] caches, for prefill or one decode token.
 
     Native BF16 phases [1,T,D] are shared by batch rows. Prefill writes [0,T);
-    decode writes only the device-side scalar position. Return Q [B,Hq,T,D].
+    decode writes only the device-side scalar position. Return a [B,Hq,T,D]
+    view of token-major Q storage (contiguous when T is one).
     """
     batch, kv_heads, capacity, dim = keys.shape
     tokens = packed.shape[1]
@@ -77,7 +78,9 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
     assert cos.numel() == sin.numel() == tokens * dim
     assert cos.is_contiguous() and sin.is_contiguous()
     assert position.shape == (tokens,) and position.dtype == torch.int64
-    query = torch.empty((batch, q_heads, tokens, dim), device=packed.device, dtype=packed.dtype)
+    # Token-major storage: Flash then returns a token-major output, so the
+    # caller's transpose back to [B,T,Hq,D] is already contiguous.
+    query = torch.empty((batch, tokens, q_heads, dim), device=packed.device, dtype=packed.dtype)
     _qk_rope_cache[(batch * tokens, q_heads + kv_heads)](
         packed, q_norm.weight, k_norm.weight, cos, sin, position, query, keys, values,
         Q_HEADS=q_heads, KV_HEADS=kv_heads, DIM=dim, CAPACITY=capacity,
@@ -85,4 +88,4 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
         TOKENS=tokens, PREFILL=prefill, BLOCK=triton.next_power_of_2(dim),
         num_warps=1 if prefill else 4,
     )
-    return query
+    return query.transpose(1, 2)
