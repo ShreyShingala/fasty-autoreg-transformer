@@ -11,6 +11,9 @@ reorder the FP32 sum over K; the single rounding to BF16 is unchanged.
 64-row weight tile, and every tile used to reload it. Same sums as ``exact``.
 ``tmah`` is that hoist in ``trans`` orientation with TMA weight loads (``tma``
 x ``hoist``); ``_hoist_trans_gemm`` is its ordinary-load twin on the same grid.
+``tmap`` is ``tma`` with SPLITS == 1 on a PERSISTENT 1-D launch of at most NUM_SMS
+programs, each looping over its share of the output tiles (no scheduling waves, no
+idle SMs, no FP32 partials); ``_persist_trans_gemm`` is its ordinary-load twin.
 """
 
 import triton
@@ -309,6 +312,107 @@ def _tmah_gemm(
     if TILES == 4:
         _store_tile(o_ptrs + 2 * BLOCK_N, acc2, row_ok, row_ok, True, EVEN_M)
         _store_tile(o_ptrs + 3 * BLOCK_N, acc3, row_ok, row_ok, True, EVEN_M)
+
+
+#: Streaming multiprocessors of the H100: a launch of at most this many programs is one
+#: scheduling wave with no idle SM; more is cut into waves, fewer leaves SMs idle.
+NUM_SMS = 132
+
+
+def persistent_programs(tiles, sms=NUM_SMS):
+    """Programs of a persistent launch over ``tiles`` output tiles: at most ``sms``, evenly loaded.
+
+    Every program walks ceil(tiles / sms) tiles at most, so that depth is fixed; the
+    fewest programs that still reach it keep every program busy to the end (304 tiles:
+    102 programs x 3 rather than 40 x 3 + 92 x 2; 2374 tiles: 132 x 18; <= 132: one each).
+    """
+    depth = -(-tiles // sms)
+    return -(-tiles // depth)
+
+
+@triton.jit
+def _persist_trans_gemm(
+    x_ptr, weight_ptr, out_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    PROGRAMS: tl.constexpr, N_TILES: tl.constexpr, STEPS: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
+    EVEN_M: tl.constexpr, EVEN_N: tl.constexpr, EVEN_K: tl.constexpr, WIDE: tl.constexpr,
+):
+    """``_trans_gemm`` with SPLITS == 1 on a persistent 1-D grid: the ordinary-load twin of ``_tmap_gemm``.
+
+    Program p of PROGRAMS owns output tiles p, p + PROGRAMS, p + 2 PROGRAMS, ... (disjoint
+    and covering: each tile index has one residue). For each tile the INNER loop runs the
+    whole K axis, STEPS = ceil(K / BLOCK_K) chunks in ascending order, as
+    ``acc = tl.dot(weight[BLOCK_N, BLOCK_K], x^T[BLOCK_K, BLOCK_M], acc)`` with an FP32
+    accumulator that starts at zero: operand shapes, orientation and chunk order are those
+    of ``_trans_gemm`` with SPLITS == 1 (CHUNK == STEPS * BLOCK_K), so each output element
+    is the same FP32 sum, and it is rounded once, by the store into the BF16 output [M, N].
+    There is no FP32 partial tensor. Nothing is carried from tile to tile: every pointer is
+    rebuilt from the tile index (a pass-through loop-carried value disables pipelining).
+    """
+    pid = tl.program_id(0)
+    rows = tl.arange(0, BLOCK_M)
+    lanes = tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    row_ok = rows[None, :] < M
+    for tile in range(pid, N_TILES, PROGRAMS):
+        columns = tile * BLOCK_N + lanes
+        if WIDE:
+            columns = columns.to(tl.int64)
+        col_ok = columns[:, None] < N
+        # weight tile [BLOCK_N, BLOCK_K] in storage orientation; x tile transposed [BLOCK_K, BLOCK_M].
+        w_ptrs = weight_ptr + columns[:, None] * K + k[None, :]
+        x_ptrs = x_ptr + k[:, None] + rows[None, :] * K
+        acc = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+        for step in range(0, STEPS):
+            k_ok = (k + step * BLOCK_K) < K
+            weight = _load_tile(w_ptrs, col_ok, k_ok[None, :], EVEN_N, EVEN_K)
+            x = _load_tile(x_ptrs, k_ok[:, None], row_ok, EVEN_K, EVEN_M)
+            acc = tl.dot(weight, x, acc)
+            w_ptrs += BLOCK_K
+            x_ptrs += BLOCK_K
+        # acc[j, i] is output row i, column columns[j].
+        _store_tile(out_ptr + columns[:, None] + rows[None, :] * N, acc, col_ok, row_ok, EVEN_N, EVEN_M)
+
+
+@triton.jit
+def _tmap_gemm(
+    x_ptr, desc_ptr, out_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    PROGRAMS: tl.constexpr, N_TILES: tl.constexpr, STEPS: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
+    EVEN_M: tl.constexpr, WIDE: tl.constexpr,
+):
+    """``_persist_trans_gemm`` with the weight tile read through the TMA tensor map.
+
+    The K-chunk loop is the INNERMOST ``for`` (only that loop is pipelined: its
+    descriptor loads become a ring of ``num_stages`` prefetched tiles); the tile loop is
+    outside it and carries nothing. ``_tma_gemm``'s descriptor ([BLOCK_N, BLOCK_K] tiling
+    of weight[N, K]), its operand orientation (the loaded tile is the FIRST operand of
+    ``tl.dot``; never transpose it: see ``_tma_gemm``) and ``_trans_gemm``'s sums with
+    SPLITS == 1. The launcher guarantees N == N_TILES * BLOCK_N and K == STEPS * BLOCK_K.
+    """
+    pid = tl.program_id(0)
+    rows = tl.arange(0, BLOCK_M)
+    lanes = tl.arange(0, BLOCK_N)
+    k = tl.arange(0, BLOCK_K)
+    row_ok = rows[None, :] < M
+    for tile in range(pid, N_TILES, PROGRAMS):
+        first = tile * BLOCK_N
+        columns = first + lanes
+        if WIDE:
+            columns = columns.to(tl.int64)
+        x_ptrs = x_ptr + k[:, None] + rows[None, :] * K
+        acc = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+        for step in range(0, STEPS):
+            weight = tl._experimental_descriptor_load(
+                desc_ptr, [first, step * BLOCK_K], [BLOCK_N, BLOCK_K], tl.bfloat16,
+            )
+            x = _load_tile(x_ptrs, row_ok, row_ok, True, EVEN_M)
+            acc = tl.dot(weight, x, acc)
+            x_ptrs += BLOCK_K
+        # acc[j, i] is output row i, column columns[j].
+        _store_tile(out_ptr + columns[:, None] + rows[None, :] * N, acc, row_ok, row_ok, True, EVEN_M)
 
 
 def exact_splits(k, block_k, wanted):

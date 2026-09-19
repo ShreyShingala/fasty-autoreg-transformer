@@ -60,6 +60,19 @@ def linear():
             err = ((got.double() - exact).abs() / ulp).max()
             print(f"{'PASS' if err <= 0.75 else 'FAIL'} linear {config} m={m} n={n} k={k}: max err {float(err):.3f} bf16-ulp vs exact product "
                   f"(native F.linear: {float(((native.double() - exact).abs() / ulp).max()):.3f}); equal-to-native frac={float((got == native).float().mean()):.4f}", flush=True)
+        if m > 1 and n % 64 == 0 and k % 128 == 0:
+            # "tmap" (here always its twin _persist_trans_gemm: no descriptor on a CPU) must be BIT-EQUAL to
+            # "trans" with one split: same operands, same K order, one rounding. Also with a 5-SM rule, so
+            # programs walk several tiles (the real 132-SM rule gives these small shapes one tile each).
+            from kernels import gemm
+            trans = L._project(x, w, ("trans", 64, 128, 1, 4))
+            report(f"tmap twin == trans(splits=1) m={m} n={n} k={k}", L._project(x, w, ("tmap", 64, 128, 1, 4)), trans)
+            rule = L.persistent_programs
+            L.persistent_programs = lambda tiles: gemm.persistent_programs(tiles, 5)
+            try:
+                report(f"tmap twin (5 programs) == trans(splits=1) m={m} n={n} k={k}", L._project(x, w, ("tmap", 64, 128, 1, 4)), trans)
+            finally:
+                L.persistent_programs = rule
         if m > 1:
             config = configs[0]; split = L._project(x, w, config, split_ok=True)
             if hasattr(split, "partial"):

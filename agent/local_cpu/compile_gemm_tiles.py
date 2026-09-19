@@ -94,9 +94,55 @@ def emulate_hoist_trans(grid, c, x, w):
     return out.reshape(c["SPLITS"], m, n).sum(0)
 
 
+def emulate_persist(grid, c, x, w):
+    """``_persist_trans_gemm`` literally: a 1-D grid, per program the tile loop around the whole K loop.
+
+    Flat pointer expressions on flat buffers; every unmasked lane in bounds; every cell of the
+    single [M, N] output written exactly once ACROSS the programs (no splits); FP64 product.
+    "tmap" / "tmap3" without a descriptor (always, on a CPU) launch this kernel.
+    """
+    m, n, k = c["M"], c["N"], c["K"]
+    block_m, block_n, block_k = c["BLOCK_M"], c["BLOCK_N"], c["BLOCK_K"]
+    assert len(grid) == 1 and grid[0] == c["PROGRAMS"] <= 132 and "SPLITS" not in c
+    assert c["STEPS"] * block_k >= k > (c["STEPS"] - 1) * block_k and c["N_TILES"] * block_n >= n > (c["N_TILES"] - 1) * block_n
+    xf, wf = x.reshape(-1), w.reshape(-1)
+    out, writes = np.full(m * n, np.nan), np.zeros(m * n, int)
+
+    def load(flat, offsets, ok):
+        assert offsets[ok].size == 0 or (0 <= offsets[ok].min() and offsets[ok].max() < flat.size), "out-of-bounds load"
+        return np.where(ok, flat[np.clip(offsets, 0, flat.size - 1)], 0.0)
+
+    depths = []
+    for pid in range(grid[0]):
+        rows, lanes, ks = np.arange(block_m), np.arange(block_n), np.arange(block_k)
+        row_ok = np.broadcast_to(rows[None, :] < m if not c["EVEN_M"] else True, (block_k, block_m))
+        mine = range(pid, c["N_TILES"], c["PROGRAMS"])
+        depths.append(len(mine))
+        for tile in mine:
+            columns = tile * block_n + lanes
+            assert c["WIDE"] or columns.max() * k + k < 2 ** 31, "int32 offsets overflow"
+            col_ok = np.broadcast_to(columns[:, None] < n if not c["EVEN_N"] else True, (block_n, block_k))
+            w_ptrs = columns[:, None] * k + ks[None, :]
+            x_ptrs = ks[:, None] + rows[None, :] * k
+            acc = np.zeros((block_n, block_m))
+            for step in range(c["STEPS"]):
+                k_ok = (ks + step * block_k) < k if not c["EVEN_K"] else np.ones(block_k, bool)
+                acc += load(wf, w_ptrs, col_ok & k_ok[None, :]) @ load(xf, x_ptrs, k_ok[:, None] & row_ok)
+                w_ptrs, x_ptrs = w_ptrs + block_k, x_ptrs + block_k
+            ok = col_ok[:, :1] & row_ok[:1, :]
+            offsets = (columns[:, None] + rows[None, :] * n)[ok]
+            assert offsets.size == 0 or (0 <= offsets.min() and offsets.max() < out.size), "out-of-bounds store"
+            out[offsets] = acc[ok]
+            np.add.at(writes, offsets, 1)
+    assert (writes == 1).all(), "a cell was not written exactly once"
+    assert max(depths) - min(depths) <= 1, "unbalanced residue classes"
+    return out.reshape(m, n)
+
+
 def launches(m, n, k, config):
     recorders = {name: Recorder(getattr(linear, name))
-                 for name in ("_exact_gemm", "_trans_gemm", "_hoist_gemm", "_hoist_trans_gemm", "_tmah_gemm")}
+                 for name in ("_exact_gemm", "_trans_gemm", "_hoist_gemm", "_hoist_trans_gemm", "_tmah_gemm",
+                             "_persist_trans_gemm", "_tmap_gemm")}
     for name, recorder in recorders.items():
         setattr(linear, name, recorder)
     # No descriptor, as on a GPU before the eager pass. (The real builder needs CUDA: on a CPU it
@@ -161,6 +207,30 @@ for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (
                 if not np.allclose(emulate_hoist_trans(grid, kwargs, x, w), x @ w.T, rtol=1e-12, atol=1e-12):
                     failures += 1
                     print("POINTER REPLAY MISMATCH", m, n, k, config)
+# "tmap": the persistent 1-D launch. Small shapes (even and ragged on every axis) with the real 132-SM
+# rule (one tile per program) and with 5 SMs (tile loops 1-3 deep, uneven residue classes); then two
+# real shapes: gate_up (102 programs x 3 tiles) and lm_head (132 programs x 17-18 tiles), ragged M.
+from kernels import gemm
+persisted = 0
+real_rule = linear.persistent_programs
+for sms, shapes in ((132, ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128), (32, 768, 640))),
+                    (5, ((16, 512, 384), (5, 256, 256), (32, 768, 640), (7, 710, 300), (20, 1000, 517), (16, 64, 128))),
+                    (132, ((16, 19456, 2560), (5, 151936, 2560)))):
+    linear.persistent_programs = lambda tiles, sms=sms: gemm.persistent_programs(tiles, sms)
+    try:
+        for m, n, k in shapes:
+            kernel, grid, kwargs = launches(m, n, k, ("tmap", 64, 128, 1, 4))
+            assert kernel.__name__ == "_persist_trans_gemm" and grid == (gemm.persistent_programs(-(-n // 64), sms),)
+            x, w = rng.standard_normal((m, k)), rng.standard_normal((n, k))
+            persisted += 1
+            if not np.allclose(emulate_persist(grid, kwargs, x, w), x @ w.T, rtol=1e-11, atol=1e-11):
+                failures += 1
+                print("PERSISTENT POINTER REPLAY MISMATCH", m, n, k, grid)
+            else:
+                print("persistent replay ok", (m, n, k), "grid", grid, "tiles", kwargs["N_TILES"], "steps", kwargs["STEPS"], flush=True)
+    finally:
+        linear.persistent_programs = real_rule
+print("persistent pointer replays", persisted)
 assert not linear._TMA_OFF[0] and replayed, "the TMA kinds were retired: tmah launches were not checked"
 print("hoist-trans pointer replays", replayed)
 print("failures", failures)

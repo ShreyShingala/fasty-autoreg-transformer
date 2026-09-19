@@ -15,7 +15,8 @@ import triton
 import triton.language as tl
 
 from kernels.gemm import (
-    _exact_gemm, _hoist_gemm, _hoist_trans_gemm, _tma_gemm, _tmah_gemm, _trans_gemm, exact_splits,
+    _exact_gemm, _hoist_gemm, _hoist_trans_gemm, _persist_trans_gemm, _tma_gemm, _tmah_gemm, _tmap_gemm,
+    _trans_gemm, exact_splits, persistent_programs,
 )
 from kernels.merged import Split
 from kernels.tune import register
@@ -94,8 +95,10 @@ def _merge_projection(
 # ``tmah`` is ``tma`` with one x-tile load shared by four weight tiles per
 # program; its fail-safe is ``_hoist_trans_gemm`` on the same grid, and it reads
 # the same [64, 128] descriptor as ``tma`` (one descriptor per weight for both).
+# ``tmap`` / ``tmap3`` are ``tma`` / ``tma3`` with one split on a persistent 1-D launch
+# (kernels/gemm.py); fail-safe ``_persist_trans_gemm``, same grid, same BF16 output.
 #: Kinds whose weights need a descriptor built in the eager pass.
-TMA_KINDS = ("tma", "tma3", "tmah")
+TMA_KINDS = ("tma", "tma3", "tmah", "tmap", "tmap3")
 #: Descriptor bytes; the blog's tuned value (the struct itself fits in 128).
 TMA_SIZE = 512
 _TMA_OFF = [False]
@@ -227,6 +230,42 @@ def _project(x, weight, config, split_ok=False, strict=False):
                 EVEN_M=m == block_m, EVEN_N=even_n, EVEN_K=even_k, WIDE=wide,
                 num_warps=warps, num_stages=2,
             )
+    elif kind in ("tmap", "tmap3"):
+        # Persistent launch: at most NUM_SMS programs, each walking its residue class of the
+        # output tiles with the whole K loop inside. One split by construction: the FP32 sum is
+        # rounded by the store into ``out``, so there is never a partial tensor (or a Split).
+        if splits != 1:
+            raise ValueError("persistent GEMM kinds take exactly one split")
+        block_m = _block_m(m)
+        tiles, steps = triton.cdiv(n, block_n), triton.cdiv(k, block_k)
+        programs = persistent_programs(tiles)
+        even_n, even_k = n % block_n == 0, k % block_k == 0
+        wide = max(n * k, m * n) + 2 * block_n * max(k, m) >= 2 ** 31
+        launched = False
+        desc = _tma_descriptor(weight, block_n, block_k) if even_n and even_k else None
+        if desc is None and strict:
+            raise RuntimeError("no TMA descriptor for this weight")
+        if desc is not None:
+            try:
+                _tmap_gemm[(programs,)](
+                    x, desc, out, M=m, N=n, K=k, PROGRAMS=programs, N_TILES=tiles, STEPS=steps,
+                    BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, EVEN_M=m == block_m, WIDE=wide,
+                    # The stage count is the depth of the ring of prefetched weight tiles.
+                    num_warps=warps, num_stages=3 if kind == "tmap3" else 2,
+                )
+                launched = True
+            except Exception as error:
+                _tma_retire(error)
+                if strict:
+                    raise
+        if not launched:
+            # No descriptor (capture before its eager pass, retired kind): the same sums, ordinary loads.
+            _persist_trans_gemm[(programs,)](
+                x, weight, out, M=m, N=n, K=k, PROGRAMS=programs, N_TILES=tiles, STEPS=steps,
+                BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
+                EVEN_M=m == block_m, EVEN_N=even_n, EVEN_K=even_k, WIDE=wide,
+                num_warps=warps, num_stages=2,
+            )
     else:
         # kernels/gemm.py: each mask exists only where that axis is ragged.
         block_m = _block_m(m)
@@ -335,13 +374,18 @@ def _candidates(m, n, k):
             # Same kernel, three prefetched tiles deep (published Hopper TMA
             # configurations use 3-5; two was our first guess).
             configs.append(tiled("tma3", 64, 128))
+            # "tma" / "tma3" with ONE split on a persistent launch of <= 132 programs, each
+            # looping over its share of the tiles: no waves, no idle SMs, no FP32 partials.
+            configs += [("tmap", 64, 128, 1, 4), ("tmap3", 64, 128, 1, 4)]
             if n % (4 * 64) == 0:
                 # "tma" with the x-tile load hoisted over four weight tiles per program.
                 configs.append(hoisted(64, 128, "tmah"))
-        configs += [hoisted(64, 128), tiled("exact", 64, 128)]
+        configs.append(hoisted(64, 128))
         if not tma:
-            # "tma" is "trans" plus TMA loads: only one of the two is ever listed.
-            configs.append(tiled("trans", 64, 128))
+            # "tma" is "trans" plus TMA loads: only one of the two is ever listed. "exact" (the
+            # narrower matrix-multiply fragments, and "hoist" without its shared x load) makes
+            # room for the persistent kinds whenever TMA is on: ~6 s per shape is 6-7 layouts.
+            configs += [tiled("exact", 64, 128), tiled("trans", 64, 128)]
     return configs
 
 

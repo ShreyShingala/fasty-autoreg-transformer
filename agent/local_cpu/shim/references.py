@@ -273,6 +273,25 @@ for _name in ("_gemv", "_skinny_gemm", "_exact_gemm", "_trans_gemm", "_hoist_gem
     reference(_name)(_gemm)
 
 
+@reference("_persist_trans_gemm")
+def _persist_gemm(grid, x_ptr, weight_ptr, out_ptr, M, N, K, PROGRAMS, N_TILES, STEPS, BLOCK_N, BLOCK_K, BLOCK_M, **launch):
+    """The persistent 1-D launch: program p owns tiles p, p + PROGRAMS, ...; one split, BF16 [M, N] output."""
+    grid = tuple(grid) + (1,) * (3 - len(tuple(grid)))
+    assert grid == (PROGRAMS, 1, 1) and 1 <= PROGRAMS <= min(132, N_TILES), f"not a persistent 1-D grid: {grid}"
+    assert (N_TILES - 1) * BLOCK_N < N <= N_TILES * BLOCK_N and (STEPS - 1) * BLOCK_K < K <= STEPS * BLOCK_K and BLOCK_M >= M
+    for flag, truth in (("EVEN_M", M == BLOCK_M), ("EVEN_N", N % BLOCK_N == 0), ("EVEN_K", K % BLOCK_K == 0)):
+        assert not launch.get(flag, False) or truth, f"mask-free launch with a ragged axis: {flag}"
+    owners = torch.zeros(N_TILES, dtype=torch.int64)
+    for program in range(PROGRAMS):
+        owners[program::PROGRAMS] += 1
+        assert len(range(program, N_TILES, PROGRAMS)) <= -(-N_TILES // PROGRAMS)
+    assert bool((owners == 1).all()), "a tile without exactly one owning program"
+    assert out_ptr.dtype == BF16, "one split rounds in the store: the output is BF16, never FP32 partials"
+    x = flat(x_ptr, M * K).view(M, K).to(F32)
+    weight = flat(weight_ptr, N * K).view(N, K).to(F32)
+    flat(out_ptr, M * N).view(M, N).copy_((x @ weight.T).to(BF16))
+
+
 @reference("_merge_projection")
 def _merge_projection(grid, partial_ptr, out_ptr, COUNT, SPLITS, BLOCK_S, BLOCK, **launch):
     assert grid[0] * BLOCK >= COUNT and BLOCK_S >= SPLITS
