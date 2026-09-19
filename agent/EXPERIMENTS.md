@@ -1312,3 +1312,14 @@ stay at 0.70, a 2048-token prompt at batch one gets 0.667 (offline: +0.9% on
 platform-like text, +6% on easy text), batches >= 4 rarely sit on the floor.
 Long outputs (>= 96) keep 0.60. Gain exists only if a hidden workload has a
 small batch with a long prompt; the public cases should not move.
+
+Result (candidate 67 = c66 + "tma" GEMM kind + refine on the three fastest
+layouts + runtime COUNT in split consumers + shared-newline successor table +
+attention knob floor): commit `822ce98` succeeded, **1130.6** - new best, #1
+(normalized 1125.8; node 0.4% FASTER than c57's); whole run **612 s** (c66:
+763 s, c57: 815 s); public TTFT 10.1 / 117.7 / 109.2 ms, TPOT 2.994 / 3.742 /
+4.047 ms (c66: 3.236 / 4.025 / 4.211): batch 4 -7%, batch 16 -4%, batch 1 -7.5%
+back to the c57 level. No crash: the TMA path either works on the H100 or was
+rejected by its fail-safes (stdout is hidden; the TPOT drop at batch 4/16
+suggests a real GEMM gain, but the same run also changed which layouts refine
+can reach). Keep. 290 s of run-time headroom is now available for tuning.
