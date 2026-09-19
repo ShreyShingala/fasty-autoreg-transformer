@@ -14,6 +14,8 @@ from torch.nn import functional as F
 import triton
 import triton.language as tl
 
+from kernels.pdl import wait as pdl_wait
+
 from kernels.gemm import (
     _exact_gemm, _hoist_gemm, _hoist_trans_gemm, _persist_trans_gemm, _tma_gemm, _tmah_gemm, _tmap_gemm,
     _trans_gemm, exact_splits, persistent_programs,
@@ -28,6 +30,7 @@ def _gemv(
     N: tl.constexpr, K: tl.constexpr, SPLITS: tl.constexpr,
     CHUNK: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     rows = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     split = tl.program_id(1)
     columns = tl.arange(0, BLOCK_K)
@@ -52,6 +55,7 @@ def _skinny_gemm(
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
     BLOCK_M: tl.constexpr = 16,
 ):
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     split = tl.program_id(1)
@@ -79,6 +83,7 @@ def _merge_projection(
     partial_ptr, out_ptr, COUNT: tl.constexpr, SPLITS: tl.constexpr,
     BLOCK_S: tl.constexpr, BLOCK: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     splits = tl.arange(0, BLOCK_S)
     values = tl.load(

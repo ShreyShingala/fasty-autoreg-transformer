@@ -12,6 +12,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.pdl import wait as pdl_wait
+
 from kernels.tune import register
 
 
@@ -33,6 +35,7 @@ def _decode_partials(
     SPLITS: tl.constexpr, CHUNK: tl.constexpr, SCALE: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, PREFIX: tl.constexpr = False,
 ):
+    pdl_wait()  # before any global memory access
     group = tl.program_id(0).to(tl.int64)  # flattened (batch, KV head)
     split = tl.program_id(1)
     heads = tl.arange(0, BLOCK_M)
@@ -104,6 +107,7 @@ def _decode_merge(
     GROUPS: tl.constexpr, DIM: tl.constexpr, SPLITS: tl.constexpr,
     BLOCK_S: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     head = tl.program_id(0).to(tl.int64)
     group = head // GROUPS
     within_group = head % GROUPS
@@ -260,6 +264,7 @@ def _block_partials(
     TOKENS * GROUPS queries share each loaded K/V tile; only their masks differ.
     Q is token-major [B,T,Hq,D]; same BF16/FP32 arithmetic as ``_decode_partials``.
     """
+    pdl_wait()  # before any global memory access
     group = tl.program_id(0).to(tl.int64)  # flattened (row, KV head)
     split = tl.program_id(1)
     row = group // KV_HEADS
@@ -364,6 +369,7 @@ def _block_partials_tma(
     Only tiles below LIMIT (rows the descriptor covers) and wholly inside the
     known prefix are read this way; the ragged tail is ``_block_partials``'s.
     """
+    pdl_wait()  # before any global memory access
     pid = tl.program_id(0)
     group = pid.to(tl.int64)  # flattened (row, KV head)
     split = tl.program_id(1)
@@ -446,6 +452,7 @@ def _block_merge(
     TOKENS: tl.constexpr, GROUPS: tl.constexpr, Q_HEADS: tl.constexpr, KV_HEADS: tl.constexpr,
     DIM: tl.constexpr, SPLITS: tl.constexpr, BLOCK_S: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     index = tl.program_id(0).to(tl.int64)  # flattened (row, token, query head) = output order
     head = index % Q_HEADS
     token = (index // Q_HEADS) % TOKENS

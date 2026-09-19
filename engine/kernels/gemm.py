@@ -19,6 +19,8 @@ idle SMs, no FP32 partials); ``_persist_trans_gemm`` is its ordinary-load twin.
 import triton
 import triton.language as tl
 
+from kernels.pdl import wait as pdl_wait
+
 
 @triton.jit
 def _load_tile(ptrs, first_ok, second_ok, EVEN_FIRST: tl.constexpr, EVEN_SECOND: tl.constexpr):
@@ -54,6 +56,7 @@ def _exact_gemm(
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
     EVEN_M: tl.constexpr, EVEN_N: tl.constexpr, EVEN_K: tl.constexpr, WIDE: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
     if WIDE:
@@ -86,6 +89,7 @@ def _trans_gemm(
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
     EVEN_M: tl.constexpr, EVEN_N: tl.constexpr, EVEN_K: tl.constexpr, WIDE: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
     if WIDE:
@@ -122,6 +126,7 @@ def _hoist_gemm(
     TILES: tl.constexpr,
     EVEN_M: tl.constexpr, EVEN_N: tl.constexpr, EVEN_K: tl.constexpr, WIDE: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0) * (TILES * BLOCK_N) + tl.arange(0, BLOCK_N)
     if WIDE:
@@ -180,6 +185,7 @@ def _tma_gemm(
     nondeterministic (Triton #6638). The launcher guarantees N % BLOCK_N == 0
     and SPLITS * CHUNK == K, so no tile reaches out of bounds.
     """
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     first = tl.program_id(0) * BLOCK_N
     columns = first + tl.arange(0, BLOCK_N)
@@ -220,6 +226,7 @@ def _hoist_trans_gemm(
     same ``tl.dot(weight_t, x^T, acc_t)`` per K chunk, so the launcher may fall
     back to it without changing anything downstream.
     """
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     columns = tl.program_id(0) * (TILES * BLOCK_N) + tl.arange(0, BLOCK_N)
     if WIDE:
@@ -277,6 +284,7 @@ def _tmah_gemm(
     (never transpose a loaded tile: see there), ``_trans_gemm``'s sums. The
     launcher guarantees N % (TILES * BLOCK_N) == 0 and SPLITS * CHUNK == K.
     """
+    pdl_wait()  # before any global memory access
     rows = tl.arange(0, BLOCK_M)
     first = tl.program_id(0) * (TILES * BLOCK_N)
     columns = first + tl.arange(0, BLOCK_N)
@@ -350,6 +358,7 @@ def _persist_trans_gemm(
     There is no FP32 partial tensor. Nothing is carried from tile to tile: every pointer is
     rebuilt from the tile index (a pass-through loop-carried value disables pipelining).
     """
+    pdl_wait()  # before any global memory access
     pid = tl.program_id(0)
     rows = tl.arange(0, BLOCK_M)
     lanes = tl.arange(0, BLOCK_N)
@@ -392,6 +401,7 @@ def _tmap_gemm(
     ``tl.dot``; never transpose it: see ``_tma_gemm``) and ``_trans_gemm``'s sums with
     SPLITS == 1. The launcher guarantees N == N_TILES * BLOCK_N and K == STEPS * BLOCK_K.
     """
+    pdl_wait()  # before any global memory access
     pid = tl.program_id(0)
     rows = tl.arange(0, BLOCK_M)
     lanes = tl.arange(0, BLOCK_N)

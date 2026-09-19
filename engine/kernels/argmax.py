@@ -12,12 +12,15 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.pdl import wait as pdl_wait
+
 
 @triton.jit
 def _block_argmax(
     logits, best_value, best_index,
     VOCAB: tl.constexpr, BLOCKS: tl.constexpr, BLOCK: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     row = tl.program_id(0).to(tl.int64)
     block = tl.program_id(1).to(tl.int64)
     columns = block * BLOCK + tl.arange(0, BLOCK)
@@ -32,6 +35,7 @@ def _first_best(
     best_value, best_index, out,
     BLOCKS: tl.constexpr, BLOCK_B: tl.constexpr,
 ):
+    pdl_wait()  # before any global memory access
     row = tl.program_id(0).to(tl.int64)
     blocks = tl.arange(0, BLOCK_B)
     values = tl.load(best_value + row * BLOCKS + blocks, blocks < BLOCKS, other=float("-inf"))

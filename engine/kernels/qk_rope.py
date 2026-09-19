@@ -4,6 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
+from kernels.pdl import wait as pdl_wait
+
 from kernels.merged import load_merged, source
 from kernels.tune import pick
 
@@ -16,6 +18,7 @@ def _qk_rope_cache(
     TOKENS: tl.constexpr, PREFILL: tl.constexpr, BLOCK: tl.constexpr,
     ROWS: tl.constexpr = False, COUNT=1, SPLITS: tl.constexpr = 1,
 ):
+    pdl_wait()  # before any global memory access
     row = tl.program_id(0).to(tl.int64)
     batch = row // TOKENS
     token = row % TOKENS

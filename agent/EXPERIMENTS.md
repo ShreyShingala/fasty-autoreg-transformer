@@ -1417,3 +1417,26 @@ per batch class with the stale-guess sibling on E[max over rows]
 batch 2, 3, 12 and 16 with short outputs (0.3-2% there). Read-outs: duration
 (expect ~760-800 s: two more attention options and two more GEMM kinds to
 compile), public-1/2 TPOT for the TMA kinds.
+
+Result (second draw of the c67 engine tree, `7cfb7f1`): **1115.5** (c67 itself:
+1130.6) - the same code, 1.3% apart. The c67-class engine is ~1115-1131; every
+"win" below ~2% is a coin flip in one run.
+
+## Candidate 80 - Programmatic Dependent Launch for every Triton kernel
+
+`engine/kernels/pdl.py`: `griddepcontrol.wait` (inline PTX, a no-op without the
+launch attribute) is the FIRST statement of all 25 launched kernels; Triton
+3.1's generated C launcher is patched at import (before any kernel) so
+single-CTA launches go through cuLaunchKernelEx with
+CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION while FASTY_PDL is set;
+stream capture turns that into programmatic graph edges. A warmup self-test
+(two-kernel chain captured in a graph, 20 replays compared bitwise) keeps the
+flag or clears it AND uninstalls the patch (a launcher that fails to build
+raises a RuntimeError there, never later). Kernels without the wait (PyTorch's
+add/index/embedding, cuBLAS) keep full edges. Sources: llama.cpp PR #22522
+(PDL on top of CUDA graphs: +4-13% token generation), vLLM PR #50230, NVIDIA
+PTX ISA (griddepcontrol, sm_90). Estimate: ~320 Triton->Triton boundaries x
+1-1.5 us = 4-8% of a pass; exactness class none (scheduling only). Offline:
+every kernel's PTX has the wait before its first global access
+(`compile_pdl.py`), the patched launcher source applies; interpreter suite,
+smoke test, unit tests pass.
