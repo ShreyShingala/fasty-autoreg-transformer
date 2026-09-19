@@ -1,24 +1,30 @@
 # Continue — Dryft Qwen3 engine
 
-## State (2026-09-19, ~16:00 UTC)
+## State (2026-09-19, ~16:20 UTC)
 
-**Leaderboard #1: 1092.267 tokens/s** (commit `45146de`, candidate 44); teammate
-fork "dryfter" 1087.3 (github.com/john-jpet/fast-transformer follows our main;
-the user wants its ideas ported - done for single-pass block attention, the
-prefill gate/up GEMM and the paired block kernel), Segfault 1013.9. User
-target: 1200. Run noise is about +/-1%; only steps of 2%+ are readable.
-The loop runs as the `autoresearch` skill. Collect results without blocking:
-`cd agent/tools && python3 collect_runs.py` (rebuilds `agent/results.tsv`).
+**Leaderboard #1: 1095.135 tokens/s** (commit `b1ca1cc`, candidate 48; whole run
+710 s against the 900 s cap); teammate fork "dryfter" 1087.3
+(github.com/john-jpet/fast-transformer follows our main; single-pass block
+attention, the prefill gate/up GEMM and the paired block kernel are ported),
+Segfault 1013.9. User target: 1200. Run noise is about +/-1%; only steps of 2%+
+are readable. The loop runs as the `autoresearch` skill. Collect results without
+blocking: `cd agent/tools && python3 collect_runs.py` (rebuilds
+`agent/results.tsv`).
 QUEUE DISCIPLINE (the user complained about a messy submissions page): at most
 two runs queued; hold finished work locally; cancel superseded runs with
 `./bin/dryft cancel <run_id>`.
-Queued now, in order: c48 `b1ca1cc` (c44 + ported prefill GEMM + block size
-measured at warmup incl. a 64-row option for batches 9-16 + trimmed warmup),
-c49 `80b0ec4` (+ ranked candidate drafts), c50 `662342b` (+ paired gate/up
-block kernel as a refine option). Known bad: cuBLASLt preference, forcing
-64-row blocks for every short prompt.
-A `git stash` holds GEMM occupancy variants (maxnreg / more warps); a subagent
-is designing skinny-GEMM variants in `~/.cache/fasty-lab/gemm_variants/`.
+In the queue: c49 `80b0ec4` (c48 + ranked candidate drafts), c50 `662342b`
+(+ paired gate/up block kernel as a refine option).
+HELD LOCALLY (not pushed), candidate 51 = commits `53063e7`..HEAD on main:
+mask-free `exact` / transposed `trans` GEMM tiles with whole-block split counts
+(`engine/kernels/gemm.py`), layout inheritance for the second block size tried
+at warmup (it used to run cuBLAS-only once the 24 s tuning budget was spent),
+refine ordered by per-step weight traffic, refine skips a projection knob the
+paired kernel replaces. Push it only after c49/c50 results say which of their
+changes stay; if c49 regresses, revert the ranked drafts with a new commit first.
+Known bad: cuBLASLt preference, forcing 64-row blocks for every short prompt.
+A `git stash` holds older GEMM occupancy variants (maxnreg / more warps; the lab
+found maxnreg only spills and num_stages changes nothing).
 
 ## What produced the jump from 933
 
