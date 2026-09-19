@@ -816,6 +816,16 @@ The verify block's attention inherited the plain-decode tiling. Register four
 alternative (tile, intervals) layouts and let `refine` (16 s) judge them in the
 captured verify graph; same dense attention, different partition.
 
+Kernel research scout (`~/.cache/fasty-lab/RESEARCH_KERNELS.md`; its gain
+figures are estimates): (1) fold the split-GEMM merge (FP32 partial sum + BF16
+round) into each consumer kernel - bit-identical, up to 4 launches per layer;
+(2) sweep `maxnreg` x `num_warps` x tile for the GEMM; (3) cuBLAS reportedly
+carries 64 rows at the cost of 16: try 4 tokens per row at batches 9-16;
+(4) program counts that fill GPU waves; (5) `CUBLASLT_WORKSPACE_SIZE` with the
+cuBLASLt trial. TunableOp, `_addmm_activation`, stream priorities: nothing.
+
+## Candidate 41 — four tokens per row at batches 9-16 (short prompts, cuBLAS rows)
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
