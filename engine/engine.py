@@ -34,6 +34,10 @@ class Engine:
         self.model.successor = successor_table(self.model)
         optimize_model(self.model)
         self.state = None
+        # torch.cuda.graph runs a full gc.collect() on entry, and warmup enters
+        # dozens of captures: freeze the model's object graph out of its reach.
+        gc.collect()
+        gc.freeze()
 
     def generate(self, input_ids: list[list[int]], max_new_tokens: int):
         """Greedy continuation of every sequence, one step at a time.

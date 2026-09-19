@@ -187,7 +187,10 @@ def _choose(query, key, value, position, scale):
     agreeing = []
     deadline = time.monotonic() + _TUNING_SECONDS
     reference = _attend(query, key, value, position, scale, default)
-    best, best_ms = default, _graph_time(lambda: _attend(query, key, value, position, scale, default))
+    # No search budget, no baseline timing: that graph capture would be wasted.
+    best, best_ms = default, (
+        _graph_time(lambda: _attend(query, key, value, position, scale, default)) if _TUNING_SECONDS > 0 else 0.0
+    )
     for config in candidates:
         if time.monotonic() >= deadline:
             break

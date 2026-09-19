@@ -1161,3 +1161,22 @@ Everything held since c57, without the workspace change. The two attention
 changes are bit-identical by interpreter proof; the other two only change what
 warmup tuning may choose. If the score falls below c57, bisect: first drop the
 hoisted candidate, then refine-before-compare.
+
+Lab verdicts (no official runs spent): a two-token ("pair") successor table is
+DEAD (`~/.cache/fasty-lab/plan/pair_table.md`: buildable coverage saves ~1% of
+passes; even ORACLE coverage saves only 3.6-4.9% at T=4, because a no-match
+pass starts on a token the table just mispredicted: 12-23% coverage there).
+
+## Candidate 63 - warmup cuts from the static audit (`plan/warmup_audit.md`) (held)
+
+`torch.cuda.graph` runs a full `gc.collect()` on entry and warmup enters 35-45
+captures per workload over an unfrozen heap holding the whole model's object
+graph: `gc.collect(); gc.freeze()` at the end of `Engine.__init__` (est. 4-10 s
+per workload and about twice as many refine options judged per budget second -
+the audit estimates refine currently reaches only ~2 attention layouts per
+block size and never the projection knobs). Also: refine uses ONE eager pass
+per option (libraries are warm by then), skips the closing re-capture when the
+graph in hand already is the winner's, and the plain decode attention chooser
+no longer times its default when its search budget is zero. No token can
+change; smoke test and unit tests pass. External research reports (pasted by
+the user) triaged: only "copy-logit siblings" (RACER) was new - lab test running.

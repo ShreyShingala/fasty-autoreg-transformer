@@ -345,12 +345,12 @@ class DecodeState:
         if min(self.drafts_by_match) < self.block_size - 1:
             spec.relocate(self.cache.store, self.move_from, self.move_to)
 
-    def capture_speculation(self):
+    def capture_speculation(self, eager=3):
         current = torch.cuda.current_stream(self.device)
         stream = torch.cuda.Stream(device=self.device)
         stream.wait_stream(current)
         with torch.cuda.stream(stream):
-            for _ in range(3):
+            for _ in range(eager):
                 self.row_position.fill_(self.shape[1])
                 self.speculate()
         current.wait_stream(stream)
@@ -416,17 +416,24 @@ class DecodeState:
         """
         deadline = time.monotonic() + seconds
         best = self.pass_seconds
-        for knob in knobs(self.shape[0] * self.block_size):
+        ordered = knobs(self.shape[0] * self.block_size)
+        captured = [knob.get() for knob in ordered]
+        for knob in ordered:
             chosen = knob.get()
             for option in knob.options:
                 if option == chosen or time.monotonic() >= deadline:
                     continue
                 knob.select(option)
-                self.capture_speculation()
+                # Libraries and streams are warm by now: one eager pass is
+                # enough to compile what this option newly needs.
+                self.capture_speculation(eager=1)
+                captured = [other.get() for other in ordered]
                 if self.pass_seconds < best * 0.99:
                     best, chosen = self.pass_seconds, option
             knob.select(chosen)
-        self.capture_speculation()
+        if captured != [knob.get() for knob in ordered]:
+            # The graph in hand measured a rejected option: rebuild the winner's.
+            self.capture_speculation(eager=1)
 
     def absorb(self, wait):
         """Bank finished passes; with ``wait``, block for the oldest one first."""
