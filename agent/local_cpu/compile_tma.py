@@ -38,7 +38,7 @@ def record(m, n, k, config, descriptor, strict=False):
 
 
 failures = 0
-for m, (n, k) in itertools.product((16, 32, 5), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
+for m, (n, k) in itertools.product((16, 32, 5, 48, 64), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     configs = [config for config in linear._candidates(m, n, k) if config[0] == "tma"]
     assert len(configs) == 1, configs
     config = configs[0]
