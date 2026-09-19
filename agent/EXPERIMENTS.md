@@ -527,6 +527,19 @@ about 18% more per pass while the slowest of 16 rows sets the pace). Rows keep
 independent positions; a step is yielded when every row has it. PACE 0.75.
 Signals to read: public-1 TPOT (batch 4) and public-0 spread.
 
+Result (candidate 22): commit `24743f9`, run
+`35799230-6827-442e-969e-121c82d40b9e` **failed: incorrect_output on public-2**
+(batch 16). That workload is not speculative (`block_tokens(16) == 1`) and runs
+the plain path that passed 21 consecutive official runs; both speculative public
+cases passed (public-0 batch 1, public-1 batch 4). Working hypothesis: a rare
+tie-margin event in the plain batch-16 path (its Triton/cuBLAS layout choice
+varies run to run); rerun the identical engine to tell a flake from a defect.
+Data: public-1 TPOT 4.412 ms (plain 4.55): batched verify blocks work, gain 3%.
+public-0 at PACE 0.75: totals p10/p50/p90 116.4/124.4/130.1 ms, TPOT 3.665, so
+the unconstrained level is about 1.18 tokens per 4.24 ms pass, and candidate
+21's median-on-the-floor was a favourable prompt draw. Draft acceptance, not
+the machinery, now limits speculation.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
