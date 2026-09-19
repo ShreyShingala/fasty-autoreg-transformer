@@ -40,6 +40,7 @@ def main():
     from kernels.swiglu import swiglu
     from kernels.qk_rope import qk_rope_cache
     from kernels.decode_attention import decode_attention
+    from kernels.linear import _project
 
     with torch.inference_mode():
         # Exercise real Qwen widths, BF16 cast placement and non-contiguous input.
@@ -157,6 +158,18 @@ def main():
                 assert torch.isfinite(actual).all()
                 torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.01)
         print("Dense split-KV decode attention parity, partial/empty splits and unused NaNs: passed", flush=True)
+
+        for rows, outputs, width in ((1, 173, 259), (4, 257, 513), (16, 127, 256), (1, 6144, 2560), (4, 2560, 9728)):
+            x = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16)
+            weight = torch.randn(outputs, width, device="cuda", dtype=torch.bfloat16) * 0.02
+            expected = torch.nn.functional.linear(x, weight)
+            configs = [("gemm", 64, 128, 1), ("gemm", 64, 128, 4)]
+            if rows == 1:
+                configs.append(("gemv", 8, 512, 1))
+            for config in configs:
+                actual = _project(x, weight, config)
+                torch.testing.assert_close(actual, expected, atol=0.001, rtol=0.016)
+        print("BF16 projections: scalar/tensor-core, split-K, ragged N/K parity passed", flush=True)
 
         if args.model_path:
             reference = AutoModelForCausalLM.from_pretrained(

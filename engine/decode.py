@@ -8,6 +8,7 @@ storage remain BF16; fused pointwise operations preserve native cast boundaries.
 import torch
 
 from kernels.rmsnorm import add_rms_norm, rms_norm
+from kernels.linear import linear
 from layers import PackedAttention, PackedMLP
 
 
@@ -105,7 +106,7 @@ def forward_last(model, token_ids, cache, position, rope, attention_mask=None):
         hidden[:, -1:, :], residual[:, -1:, :],
         base.norm.weight, base.norm.variance_epsilon,
     )
-    return model.lm_head(normalized)[:, 0, :]
+    return linear(normalized, model.lm_head.weight)[:, 0, :]
 
 
 class DecodeState:
@@ -128,6 +129,16 @@ class DecodeState:
         self.cos, self.sin = model.model.rotary_emb(
             weight.new_empty((1, 1, weight.shape[1])), self.positions.unsqueeze(0)
         )
+        if batch <= 16:
+            # Spend the bounded tuning budget on the largest weight traffic
+            # first. These are synthetic, untimed shape probes, not KV state.
+            layer = model.model.layers[0]
+            for projection in (
+                layer.mlp.gate_up_weight, layer.mlp.down_proj.weight,
+                model.lm_head.weight, layer.self_attn.qkv_weight,
+                layer.self_attn.o_proj.weight,
+            ):
+                linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
         self.graph = None
         if output_length > 1:
             self.capture()

@@ -3,11 +3,11 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-The latest measured engine passed the official H100 benchmark at **644.6
-tokens/s** (commit `fb686a3`), up from **528.6** at `0d92f17`. It uses a static
-BF16 KV cache, CUDA graph decode, grouped SDPA, fused RMSNorm, packed projections,
+The latest measured engine passed the official H100 benchmark at **789.4
+tokens/s** (commit `a410d2c`), up from **528.6** at `0d92f17`. It uses a static
+BF16 KV cache, CUDA graph decode, dense Triton attention, fused RMSNorm, packed projections,
 fused SwiGLU, fused residual additions, and fused decode Q/K norm, RoPE and cache writes.
-The next candidate replaces masked decode SDPA with dense Triton attention;
+The next candidate selects BF16 projection kernels against cuBLAS during warmup;
 its result is pending. See
 [experiment notes](agent/EXPERIMENTS.md) for measurements and validation commands.
 The original baseline remains available at commit `e35c206`.

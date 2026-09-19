@@ -170,6 +170,34 @@ Algorithm reference: [Triton 3.1.0 fused-attention tutorial](https://github.com/
 This implementation adapts the online-softmax approach to GQA decode and merges
 disjoint KV intervals; it does not require newer Triton descriptor APIs.
 
+Result: commit `a410d2c` passed official run
+`6696543f-6494-444c-bb08-35b25e694540`, ranked **789.447 tokens/s**, up **22.46%**.
+Public TPOT was 4.529/5.104/5.201 ms; TTFT was 25.476/162.326/151.670 ms.
+All gates passed; peak GPU memory remained 15.123 GiB. Candidate 5 is now the
+measured fallback. The first five official candidates have all passed.
+
+## Candidate 6 — measure BF16 skinny projections against cuBLAS
+
+Both research reports make conflicting, unmeasured assertions about custom
+BF16 projection performance. Implement one tensor-core split-K candidate and,
+for batch 1, one scalar GEMV candidate. All weights and inputs remain BF16,
+products accumulate in FP32, and output rounds once to BF16. Split-K stores
+FP32 partial sums and reduces them without atomics. Every vocabulary row is
+evaluated for the LM head; the existing BF16-logit argmax remains unchanged.
+
+Select once per (device, rows, output width, input width) during eager warmup.
+Compare against cuBLAS using graph replay, flushing 128 MiB before each product
+so small weights do not receive an unrealistic L2-cache advantage. Check a
+private random probe against native output, and recheck timings after compiling
+to reduce clock-ramp bias. Keep cuBLAS unless the candidate is measurably faster.
+The search has a 12-second deadline per process; an in-progress compilation can
+finish after that deadline, but subsequent choices use cuBLAS. Choices never
+change during measured samples. Large prefill products remain native.
+
+Risks: operator sanity checks cannot establish end-to-end greedy correctness;
+Triton reduction order and the tuning proxy need the official H100 replay and
+score. The whole-run limit also requires keeping compilation bounded.
+
 ## September 19 backend migration
 
 Reinstalled the official CLI through the upstream starter installer, including

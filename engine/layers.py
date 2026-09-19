@@ -1,11 +1,11 @@
 """Pack projections that share an input, without changing their BF16 outputs."""
 
 import torch
-from torch.nn import functional as F
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
 from kernels.decode_attention import decode_attention
+from kernels.linear import linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 
@@ -33,7 +33,7 @@ class PackedAttention(torch.nn.Module):
                 past_key_value=None, cache_position=None, **kwargs):
         input_shape = hidden_states.shape[:-1]
         head_shape = (*input_shape, -1, self.head_dim)
-        packed = F.linear(hidden_states, self.qkv_weight)
+        packed = linear(hidden_states, self.qkv_weight)
         cos, sin = position_embeddings
         if hidden_states.shape[1] == 1 and past_key_value is not None and not past_key_value.prefilling:
             key = past_key_value.keys[self.layer_idx]
@@ -57,7 +57,7 @@ class PackedAttention(torch.nn.Module):
             attention, _ = grouped_sdpa(
                 self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
             )
-        return self.o_proj(attention.reshape(*input_shape, -1).contiguous()), None
+        return linear(attention.reshape(*input_shape, -1).contiguous(), self.o_proj.weight), None
 
 
 class PackedMLP(torch.nn.Module):
@@ -71,5 +71,5 @@ class PackedMLP(torch.nn.Module):
         self.train(reference.training)
 
     def forward(self, hidden_states):
-        gate_up = F.linear(hidden_states, self.gate_up_weight)
-        return self.down_proj(swiglu(gate_up))
+        gate_up = linear(hidden_states, self.gate_up_weight)
+        return linear(swiglu(gate_up), self.down_proj.weight)
