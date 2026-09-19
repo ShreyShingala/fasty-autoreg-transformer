@@ -1052,3 +1052,17 @@ counts. Candidate 53 (already queued) removes the one-token part; candidate 54
 also trims the budgets (`_PROCESS_SECONDS` 24 -> 18, refine 14 -> 10 s).
 LESSON: every warmup second costs six (one per workload); measure run duration
 (`finishedAt - startedAt`) as a first-class result.
+
+## Candidate 55 — the previous pass's own prediction as the first alternative (held)
+
+Lab experiment on the real model (`~/.cache/fasty-lab/plan/verify_logit_drafts.md`,
+18 samples x 2 regimes, paired bootstrap): after a wrong chain draft at slot g,
+`greedy[g]` of that pass (the model's output one wrong token into the future)
+predicts the token after the new trusted one. As a CHAIN it is a wash; as the
+FIRST SIBLING it cuts passes 2.0-2.9% at 16-token blocks and 1.5-1.9% at 4
+(rule: only when at least two sibling lanes exist). `_settle` stores it per row
+(-1 after a sibling hit or a fully accepted chain), `_propose` seeds lane 0,
+prefill clears it (no state crosses generations). Drafts only: verification is
+untouched. Checks: check_tree emulation with hints = sequential greedy in 400
+cases (1506 hints used); Triton interpreter == emulation on 80 cases incl. the
+stale output; cuda:90 compile; whole-engine smoke 0 mismatches; unit tests.

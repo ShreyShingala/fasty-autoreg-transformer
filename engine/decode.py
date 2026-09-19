@@ -294,6 +294,9 @@ class DecodeState:
             self.chains = torch.ones(batch, dtype=torch.int64, device=self.device)
             self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
             self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
+            # The model's own guess for each row's next draft 1 (-1: none),
+            # left by the previous pass of the SAME generation; prefill clears it.
+            self.stale = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
             self.cache.chain = self.chains
             self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
         # Per block size: each block token's RoPE offset (the chain counts up,
@@ -324,7 +327,7 @@ class DecodeState:
         """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
         tokens = spec.propose(
             self.history, self.row_position, self.block_size, self.drafts_by_match,
-            self.model.successor, self.chains, self.phases,
+            self.model.successor, self.stale, self.chains, self.phases,
         )
         positions = self.row_position[:, None] + self.phases
         rope = (self.cos[0][positions], self.sin[0][positions])
@@ -336,7 +339,7 @@ class DecodeState:
         # never past the last requested token; record it; move each row.
         spec.settle(
             tokens, greedy, self.row_position, self.limit, self.history, self.result,
-            self.move_from, self.move_to, self.chains,
+            self.move_from, self.move_to, self.chains, self.stale,
         )
         if min(self.drafts_by_match) < self.block_size - 1:
             spec.relocate(self.cache.store, self.move_from, self.move_to)
@@ -368,6 +371,7 @@ class DecodeState:
             times.append(start.elapsed_time(end))
         self.row_position.fill_(self.shape[1])
         self.history.zero_()
+        self.stale.fill_(-1)
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
         self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
 
@@ -517,6 +521,7 @@ class DecodeState:
             self.history[:, :length].copy_(self.prompt_ids)
             self.history[:, length:length + 1].copy_(self.token_ids)
             self.row_position.fill_(length)
+            self.stale.fill_(-1)
 
     def capture_prefill(self):
         current = torch.cuda.current_stream(self.device)

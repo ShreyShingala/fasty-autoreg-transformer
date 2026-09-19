@@ -288,7 +288,7 @@ def _emulation(name, cache={}):
 
 @reference("_propose")
 def _propose(
-    grid, history, position, successor, tokens, chains, phases,
+    grid, history, position, successor, stale, tokens, chains, phases,
     SIZE, TOKENS, MAXLEN, D0, D1, D2, D3, LANES, ALTERNATES, TOP, BLOCK, BLOCK_S, BLOCK_T, **launch,
 ):
     """The shipped drafting kernel, through check_tree.py's line-by-line emulation."""
@@ -305,7 +305,7 @@ def _propose(
         h = flat(history, (row + 1) * SIZE)[row * SIZE:].tolist()
         place = int(flat(position)[row])
         assert 0 <= place < SIZE, f"_propose: row {row} position {place} outside history of {SIZE}"
-        out, chain, phase = emu_propose(h, place, Top(), SIZE, TOKENS, (D0, D1, D2, D3), MAXLEN, TOP)
+        out, chain, phase = emu_propose(h, place, Top(), SIZE, TOKENS, (D0, D1, D2, D3), MAXLEN, TOP, int(flat(stale)[row]))
         flat(tokens, (row + 1) * TOKENS)[row * TOKENS:].copy_(torch.tensor(out, dtype=torch.int64))
         flat(chains)[row] = chain
         flat(phases, (row + 1) * TOKENS)[row * TOKENS:].copy_(torch.tensor(phase, dtype=torch.int64))
@@ -392,7 +392,7 @@ def _propose_ranked(
 
 
 @reference("_settle")
-def _settle(grid, tokens, greedy, position, limit, history, result, move_from, move_to, chains, SIZE, TOKENS, BLOCK, **launch):
+def _settle(grid, tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale, SIZE, TOKENS, BLOCK, **launch):
     assert BLOCK >= TOKENS
     for row in range(grid[0]):
         CHAIN = int(flat(chains)[row])
@@ -405,6 +405,7 @@ def _settle(grid, tokens, greedy, position, limit, history, result, move_from, m
         place = int(flat(position)[row])
         room = max(int(flat(limit)[row]) - place, 0)
         branch = gained == 1 and hit < TOKENS and room >= 2
+        flat(stale)[row] = chosen[min(gained, TOKENS - 1)] if (gained < CHAIN and not branch) else -1
         gained = min(2 if branch else gained, room)
         bonus = chosen[min(hit, TOKENS - 1)]
         emitted = [bonus if (branch and slot == 1) else chosen[slot] for slot in range(TOKENS)]
