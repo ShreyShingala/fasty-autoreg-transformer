@@ -93,6 +93,54 @@ WORST_PASSES = 0.90
 PACE_FLOOR_MIN = 0.60
 
 
+class Mailbox:
+    """Completion stamps the GPU writes into pinned host memory, read without a driver call.
+
+    The sandboxed host traps every event query or wait; the host loop makes
+    one or two per pass and its release loop spins on them. Instead each pass
+    (or step) copies its result and then its stamp, in stream order, and the
+    host polls the stamp with a plain memory read. The event stays recorded:
+    a stamp that has not shown up within a generous window means the
+    mechanism is not trustworthy on this system, and events take over for
+    good.
+    """
+
+    SPAN = 1 << 20
+
+    def __init__(self, slots, device):
+        try:
+            self.flags = torch.zeros(slots, dtype=torch.int64, pin_memory=True)
+            self.usable = True
+        except RuntimeError:
+            self.flags = torch.zeros(slots, dtype=torch.int64)
+            self.usable = False
+        self.stamps = torch.arange(1, slots + 1, dtype=torch.int64, device=device)
+        self.base = 0
+
+    def next_generation(self):
+        """On the stream, after whatever the previous generation left there."""
+        self.stamps.add_(self.SPAN)
+        self.base += self.SPAN
+
+    def post(self, slot):
+        """Enqueue right after the slot's payload copy on the same stream."""
+        if self.usable:
+            self.flags[slot:slot + 1].copy_(self.stamps[slot:slot + 1], non_blocking=True)
+
+    def ready(self, slot):
+        return self.usable and int(self.flags[slot]) == self.base + slot + 1
+
+    def wait(self, slot, event, window=0.5):
+        if self.usable:
+            deadline = time.perf_counter() + window
+            while time.perf_counter() < deadline:
+                if self.ready(slot):
+                    return
+            self.usable = False  # the stamp never came: events from now on
+            print("mailbox: falling back to events", flush=True)
+        event.synchronize()
+
+
 class FusedRMSNorm(torch.nn.Module):
     def __init__(self, reference):
         super().__init__()
@@ -294,6 +342,7 @@ class DecodeState:
         except RuntimeError:
             self.host_tokens = torch.empty((output_length, batch), dtype=torch.int64)
         self.events = [torch.cuda.Event() for _ in range(output_length)]
+        self.mailbox = Mailbox(output_length, self.device)
         self.enqueued = 0
         self.graph = None
         self.prefill_graph = None
@@ -327,6 +376,7 @@ class DecodeState:
             self.stale = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
             self.cache.chain = self.chains
             self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
+            self.pass_mailbox = Mailbox(output_length, self.device)
         # Per block size: each block token's RoPE offset (the chain counts up,
         # alternatives stand where draft 1 stands; KV slots are position + t),
         # the pass result and its pinned host mirror.
@@ -492,9 +542,9 @@ class DecodeState:
         while self.passes_read < self.passes_enqueued:
             event = self.pass_events[self.passes_read]
             if wait:
-                event.synchronize()
+                self.pass_mailbox.wait(self.passes_read, event)
                 wait = False
-            elif not event.query():
+            elif not (self.pass_mailbox.ready(self.passes_read) or (not self.pass_mailbox.usable and event.query())):
                 return
             rows = self.host_passes[self.passes_read].tolist()
             self.passes_read += 1
@@ -514,12 +564,13 @@ class DecodeState:
                 return
             self.spec_graph.replay()
             self.host_passes[self.passes_enqueued].copy_(self.result, non_blocking=True)
+            self.pass_mailbox.post(self.passes_enqueued)
             self.pass_events[self.passes_enqueued].record()
             self.passes_enqueued += 1
 
     def read_speculative(self, step):
         if step == 0:
-            self.events[0].synchronize()
+            self.mailbox.wait(0, self.events[0])
             self.tokens = [[token] for token in self.host_tokens[0].tolist()]
             self.fill()
             self.started = time.perf_counter()
@@ -624,6 +675,7 @@ class DecodeState:
     def snapshot(self):
         step = self.enqueued
         self.host_tokens[step].copy_(self.token_ids[:, 0], non_blocking=True)
+        self.mailbox.post(step)
         self.events[step].record()
         self.enqueued = step + 1
 
@@ -640,13 +692,16 @@ class DecodeState:
     def read(self, step):
         if self.speculative:
             return self.read_speculative(step)
-        self.events[step].synchronize()
+        self.mailbox.wait(step, self.events[step])
         return self.host_tokens[step].tolist()
 
     def prefill(self, prompt):
         # Steps left in flight by an abandoned generator precede this prefill
         # on the stream; it then overwrites every input they touched.
         self.enqueued = 0
+        self.mailbox.next_generation()
+        if self.speculative:
+            self.pass_mailbox.next_generation()
         if self.speculative:
             # Passes left by an abandoned generator precede this prefill on the
             # stream; it rewrites the position and the history they used.

@@ -1464,3 +1464,16 @@ TMA attention option and the persistent TMA GEMM kinds stay (they can only be
 selected by timing, and public-1/2 improved with them in the list).
 
 ## Candidate 82 - c80 (PDL) + fused lm_head/argmax knob, per-batch table reverted
+
+## Candidate 83 - completion stamps in pinned memory instead of event waits (held)
+
+`Mailbox` (decode.py): after each pass's (or step's) result copy, the stream
+copies a per-slot stamp (unique per generation, an in-place add on the device
+each prefill) into pinned host memory; the host polls it with a plain read.
+The sandboxed host (gVisor) traps every `event.query()` / `synchronize()`
+ioctl, and the release loop spins on them once or twice per pass. The event is
+still recorded: if a stamp does not show within 0.5 s the mailbox retires
+itself and events take over (no correctness dependence: results are read only
+after the stamp that the stream enqueued after them). Idea seen in a public
+competitor engine (`_drain` pattern). Expected 0-3% at batch 1-4; smoke test
+0 mismatches on speculative and plain shapes, no fallback triggered.
