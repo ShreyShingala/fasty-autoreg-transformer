@@ -1,11 +1,23 @@
-"""Exact single-token grouped-query SDPA without repeating cached K/V heads."""
+"""Native Flash GQA prefill and a grouped single-token SDPA reference path."""
 
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
 
 def grouped_sdpa(module, query, key, value, attention_mask, dropout=0.0, scaling=None, **kwargs):
-    if query.shape[2] != 1 or attention_mask is None:
+    if attention_mask is None:
+        assert query.shape[2] == key.shape[2], "unmasked prefill must be square"
+        # PyTorch 2.5.1's CUDA Flash backend supports GQA and noncontiguous
+        # outer strides. Avoid the HF adapter's repeated KV tensors and its
+        # three contiguous copies. Prefill is square and unpadded here.
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            output = torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, dropout_p=dropout, scale=scaling,
+                is_causal=query.shape[2] > 1, enable_gqa=True,
+            )
+        return output.transpose(1, 2).contiguous(), None
+    if query.shape[2] != 1:
         return sdpa_attention_forward(
             module, query, key, value, attention_mask,
             dropout=dropout, scaling=scaling, **kwargs,

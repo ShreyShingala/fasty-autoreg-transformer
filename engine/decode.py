@@ -125,6 +125,7 @@ class DecodeState:
             (1,), prompt_length, dtype=torch.int64, device=self.device
         )
         self.token_ids = torch.zeros((batch, 1), dtype=torch.int64, device=self.device)
+        self.prompt_ids = torch.zeros((batch, prompt_length), dtype=torch.int64, device=self.device)
         # Native RoPE uses only the input's dtype/device, not its values.
         self.cos, self.sin = model.model.rotary_emb(
             weight.new_empty((1, 1, weight.shape[1])), self.positions.unsqueeze(0)
@@ -140,6 +141,8 @@ class DecodeState:
             ):
                 linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
         self.graph = None
+        self.prefill_graph = None
+        self.capture_prefill()
         if output_length > 1:
             self.capture()
 
@@ -174,21 +177,41 @@ class DecodeState:
             self.decode()
         current.wait_stream(stream)
 
-    def prefill(self, prompt):
+    def prefill_forward(self):
         length = self.shape[1]
-        self.cache.prefilling = True
-        try:
-            logits = forward_last(
-                self.model,
-                prompt,
-                self.cache,
-                self.positions[:length],
-                (self.cos[:, :length, :], self.sin[:, :length, :]),
-            )
-        finally:
-            self.cache.prefilling = False
+        logits = forward_last(
+            self.model,
+            self.prompt_ids,
+            self.cache,
+            self.positions[:length],
+            (self.cos[:, :length, :], self.sin[:, :length, :]),
+        )
         self.token_ids.copy_(logits.argmax(dim=-1, keepdim=True))
         self.position.fill_(length)
+
+    def capture_prefill(self):
+        current = torch.cuda.current_stream(self.device)
+        stream = torch.cuda.Stream(device=self.device)
+        stream.wait_stream(current)
+        self.cache.prefilling = True
+        try:
+            with torch.cuda.stream(stream):
+                for _ in range(2):
+                    self.prefill_forward()
+            current.wait_stream(stream)
+            torch.cuda.synchronize(self.device)
+            # Separate memory pools: prefill/decode may be replayed in any
+            # order during preparation, without aliasing graph temporaries.
+            self.prefill_graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.prefill_graph, stream=stream):
+                self.prefill_forward()
+            current.wait_stream(stream)
+        finally:
+            self.cache.prefilling = False
+
+    def prefill(self, prompt):
+        self.prompt_ids.copy_(prompt)
+        self.prefill_graph.replay()
         # Every prompt slot was overwritten. Old continuation slots remain
         # inaccessible until rewritten: decode excludes j > position on every
         # replay, including the first replay after warmup or another sample.

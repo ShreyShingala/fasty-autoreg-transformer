@@ -198,6 +198,34 @@ Risks: operator sanity checks cannot establish end-to-end greedy correctness;
 Triton reduction order and the tuning proxy need the official H100 replay and
 score. The whole-run limit also requires keeping compilation bounded.
 
+Commit `af06883`, deployment `32243a3f-65a5-4f62-82bd-1b6654568831`, was
+received by the backend at 06:40 UTC. Deployment import queued for several
+minutes before creating official run `ac98eaff-fa1d-42fc-97cc-1c1e32752515`.
+Its measurement is in progress. No duplicate run was created.
+
+## Candidate 7 — native Flash GQA and CUDA-graph prefill
+
+Use PyTorch 2.5.1's FlashAttention backend with `enable_gqa=True` for square,
+unpadded prefill. This avoids the pinned HF adapter's KV replication and Q/K/V
+contiguous copies. CUDA Flash's pinned eligibility checks support unequal GQA
+head counts and require only a contiguous last dimension. Keep causal masking
+for multi-token prompts and no causal mask for single-token prompts.
+
+Capture the entire fixed-shape prompt pass, cache-prefix writes, first-token
+argmax and position reset into a separate CUDA graph. Each generation copies
+its actual prompt into persistent input storage and replays that graph. The
+prefill flag is set during eager warmup and capture; replay uses those captured
+operations. Prefill and decode use separate private pools, with only explicit
+input/output/cache buffers shared. All prompt cache slots are overwritten on
+each generation before any continuation is read.
+
+Read-only Claude review found no blocking graph-state, stream-ordering or
+GQA-compatibility defect. GPU verification additionally covers strided inputs,
+one-token prompts, one output, and short-prefill projection tuning. H100
+correctness, peak memory and score remain to be measured.
+
+Source: [PyTorch 2.5.1 CUDA SDPA eligibility](https://github.com/pytorch/pytorch/blob/v2.5.1/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp).
+
 ## September 19 backend migration
 
 Reinstalled the official CLI through the upstream starter installer, including

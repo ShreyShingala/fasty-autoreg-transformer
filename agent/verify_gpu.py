@@ -138,6 +138,19 @@ def main():
             torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.01)
         print("Grouped SDPA parity against repeated KV heads: passed", flush=True)
 
+        for batch, length, dim in ((1, 1, 64), (2, 17, 128), (4, 512, 128)):
+            # Packed-projection-like outer strides; Flash only requires the
+            # head dimension to be contiguous. No repeated KV allocation.
+            packed = torch.randn(batch, length, 48 * dim, device="cuda", dtype=torch.bfloat16)
+            q, k, v = packed.split((32 * dim, 8 * dim, 8 * dim), dim=-1)
+            q = q.reshape(batch, length, 32, dim).transpose(1, 2)
+            k = k.reshape(batch, length, 8, dim).transpose(1, 2)
+            v = v.reshape(batch, length, 8, dim).transpose(1, 2)
+            expected, _ = sdpa_attention_forward(module, q, k, v, None, scaling=dim**-0.5)
+            actual, _ = grouped_sdpa(module, q, k, v, None, scaling=dim**-0.5)
+            torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.01)
+        print("Native Flash GQA prefill parity with strided Q/K/V: passed", flush=True)
+
         for batch, kv_heads, dim, capacity, valid in (
             (1, 8, 128, 1, 1), (1, 8, 128, 65, 1), (1, 8, 128, 65, 33),
             (1, 8, 128, 544, 513), (4, 8, 128, 2080, 2048),
@@ -191,7 +204,7 @@ def main():
             candidate.model = copy.deepcopy(reference)
             optimize_model(candidate.model)
             candidate.state = None
-            shapes = [(1, 1, 1), (2, 13, 7), (1, 19, 9), (2, 13, 7), (4, 8, 3)]
+            shapes = [(1, 1, 1), (1, 1, 5), (3, 1, 4), (2, 5, 4), (2, 13, 7), (1, 19, 9), (2, 13, 7), (4, 8, 3)]
 
         for batch, length, outputs in shapes:
             shape = (batch, length, outputs)
