@@ -759,6 +759,12 @@ aggregate is 1.3% below candidates 28-29, whose batches 3-8 used 20-32 row
 blocks. Reading: large blocks lose at long context (attention work doubles)
 and win at short context.
 
+Result (candidate 36): commit `b0e2d76`, run `81d170f3` succeeded, ranked
+**1075.684** — new best, leaderboard #1 again (dryfter 1072.5, Segfault 1013.9
+at 15:24 UTC). public 299.7 / 515.2 / 3147.5. Candidate 35's match-length
+shapes plus "warmup never sets the pace"; with candidate 35 alone at 1054.6 the
+pair brackets the noise: treat the level as about 1065 +/- 10.
+
 ## Candidate 37 — block size from batch and prompt length
 
 32-row budget when the prompt is shorter than 1536 tokens (batches 3-10), a
