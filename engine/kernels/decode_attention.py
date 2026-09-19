@@ -180,6 +180,9 @@ def _graph_time(fn):
 _CONFIGS = {}
 _BLOCK_LAYOUTS = {}
 _TUNING_SECONDS = 0.0  # the plain-decode layout search never found a winner; keep the default
+#: Batches above 16 decode one token per step with no speculation, and at long
+#: context the K/V read is most of that step: those shapes get a real search.
+_WIDE_TUNING_SECONDS = 4.0
 
 
 def _choose(query, key, value, position, scale):
@@ -203,11 +206,12 @@ def _choose(query, key, value, position, scale):
         if config != default and config not in candidates:
             candidates.append(config)
     agreeing = []
-    deadline = time.monotonic() + _TUNING_SECONDS
+    budget = _TUNING_SECONDS if query.shape[0] <= 16 else _WIDE_TUNING_SECONDS
+    deadline = time.monotonic() + budget
     reference = _attend(query, key, value, position, scale, default)
     # No search budget, no baseline timing: that graph capture would be wasted.
     best, best_ms = default, (
-        _graph_time(lambda: _attend(query, key, value, position, scale, default)) if _TUNING_SECONDS > 0 else 0.0
+        _graph_time(lambda: _attend(query, key, value, position, scale, default)) if budget > 0 else 0.0
     )
     for config in candidates:
         if time.monotonic() >= deadline:

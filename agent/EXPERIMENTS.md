@@ -1497,3 +1497,12 @@ and starve the bandwidth-bound kernel still running (llama.cpp reported the
 same for matvec kernels). The hidden aggregate still rose vs c79, which says
 c79's draw was low rather than PDL good. PDL DISABLED (`ENABLED = False`; the
 no-op wait instruction stays in the kernels). Keep-of-record: none.
+
+## Candidate 86 - plain decode attention gets a layout search above batch 16 (held)
+
+Whole-system review item 4: the plain one-token step (batches above 16, no
+speculation) never tuned its attention layout (`_TUNING_SECONDS = 0`), and at
+batch 32-64 x 2048 context the K/V read (20 GB per step at batch 64) is most
+of the step. A 4 s search now runs only when the batch exceeds 16; the public
+shapes (batch 1/4/16) are untouched. Smoke: batches 20 and 40 exercised the
+search on CPU (0 mismatches).
