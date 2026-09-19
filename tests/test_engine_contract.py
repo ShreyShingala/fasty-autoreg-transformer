@@ -37,6 +37,7 @@ class InferenceMode:
 
 class State:
     builds = 0
+    max_enqueued = 0
 
     def __init__(self, model, shape):
         State.builds += 1
@@ -45,10 +46,17 @@ class State:
         self.graph = self
 
     def prefill(self, prompt):
-        self.token_ids = Tensor([[row[-1]] for row in prompt.values])
+        self.rows = [[row[-1] for row in prompt.values]]
+        State.max_enqueued = max(State.max_enqueued, 1)
 
-    def replay(self):
-        self.token_ids = Tensor([[row[0] + 1] for row in self.token_ids.values])
+    def advance(self, limit):
+        assert limit <= self.shape[2], "enqueued past the requested outputs"
+        while len(self.rows) < limit:
+            self.rows.append([token + 1 for token in self.rows[-1]])
+        State.max_enqueued = max(State.max_enqueued, len(self.rows))
+
+    def read(self, step):
+        return list(self.rows[step])
 
 
 def load_engine():
@@ -75,6 +83,7 @@ class EngineContractTests(unittest.TestCase):
         self.engine.model = object()
         self.engine.state = None
         State.builds = 0
+        State.max_enqueued = 0
 
     def test_yield_count_batch_order_and_eos(self):
         # Zero is a fake EOS. It must be streamed normally and decoding resumes.
@@ -83,6 +92,14 @@ class EngineContractTests(unittest.TestCase):
 
     def test_single_output_never_replays_decode(self):
         self.assertEqual(list(self.engine.generate([[42]], 1)), [[42]])
+
+    def test_lookahead_is_bounded_and_never_exceeds_outputs(self):
+        generator = self.engine.generate([[5]], 50)
+        self.assertEqual(next(generator), [5])
+        self.assertLessEqual(State.max_enqueued, 8)
+        generator.close()
+        self.assertEqual(list(self.engine.generate([[5]], 50))[-1], [54])
+        self.assertEqual(State.max_enqueued, 50)
 
     def test_zero_outputs_do_not_allocate(self):
         self.assertEqual(list(self.engine.generate([], 0)), [])

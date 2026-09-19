@@ -5,6 +5,10 @@ from transformers import AutoModelForCausalLM
 
 from decode import DecodeState, optimize_model
 
+#: Decode steps enqueued beyond the one being read. Bounded, so an abandoned
+#: generator leaves little work behind and the launch queue stays shallow.
+LOOKAHEAD = 4
+
 
 class Engine:
     def __init__(self, model_path: str) -> None:
@@ -48,10 +52,13 @@ class Engine:
             state = self.state
             prompt = torch.tensor(input_ids, dtype=torch.int64, device=state.device)
             state.prefill(prompt)
-            tokens = state.token_ids[:, 0].tolist()
+            # Keep a few decode steps queued behind the GPU so it never waits
+            # for the consumer; never enqueue past the requested output count.
+            state.advance(min(max_new_tokens, 1 + LOOKAHEAD))
+            tokens = state.read(0)
         yield tokens
-        for _ in range(max_new_tokens - 1):
+        for step in range(1, max_new_tokens):
             with torch.inference_mode():
-                state.graph.replay()
-                tokens = state.token_ids[:, 0].tolist()
+                state.advance(min(max_new_tokens, step + 1 + LOOKAHEAD))
+                tokens = state.read(step)
             yield tokens

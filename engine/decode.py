@@ -146,6 +146,15 @@ class DecodeState:
                 layer.self_attn.o_proj.weight,
             ):
                 linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+        # One host row and one event per output step. Decode replays are
+        # enqueued ahead of the consumer; each row is an ordered snapshot of
+        # ``token_ids`` taken between two replays on the same stream.
+        try:
+            self.host_tokens = torch.empty((output_length, batch), dtype=torch.int64, pin_memory=True)
+        except RuntimeError:
+            self.host_tokens = torch.empty((output_length, batch), dtype=torch.int64)
+        self.events = [torch.cuda.Event() for _ in range(output_length)]
+        self.enqueued = 0
         self.graph = None
         self.prefill_graph = None
         self.capture_prefill()
@@ -215,9 +224,29 @@ class DecodeState:
         finally:
             self.cache.prefilling = False
 
+    def snapshot(self):
+        step = self.enqueued
+        self.host_tokens[step].copy_(self.token_ids[:, 0], non_blocking=True)
+        self.events[step].record()
+        self.enqueued = step + 1
+
+    def advance(self, limit):
+        """Enqueue decode steps until ``limit`` outputs are in flight or done."""
+        while self.enqueued < limit:
+            self.graph.replay()
+            self.snapshot()
+
+    def read(self, step):
+        self.events[step].synchronize()
+        return self.host_tokens[step].tolist()
+
     def prefill(self, prompt):
+        # Steps left in flight by an abandoned generator precede this prefill
+        # on the stream; it then overwrites every input they touched.
+        self.enqueued = 0
         self.prompt_ids.copy_(prompt)
         self.prefill_graph.replay()
+        self.snapshot()
         # Every prompt slot was overwritten. Old continuation slots remain
         # inaccessible until rewritten: decode excludes j > position on every
         # replay, including the first replay after warmup or another sample.
