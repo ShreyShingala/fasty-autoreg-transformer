@@ -13,6 +13,8 @@ from torch.nn import functional as F
 import triton
 import triton.language as tl
 
+from kernels import packed as packing
+
 
 @triton.jit
 def _gemv(
@@ -79,8 +81,17 @@ def _merge_projection(
     tl.store(out_ptr + offsets, tl.sum(values, axis=0), offsets < COUNT)
 
 
+def _merge(partial, out, count, splits):
+    _merge_projection[(triton.cdiv(count, 512),)](
+        partial, out, COUNT=count, SPLITS=splits,
+        BLOCK_S=triton.next_power_of_2(splits), BLOCK=512, num_warps=4,
+    )
+
+
 def _project(x, weight, config):
     kind, block_n, block_k, splits, warps = config
+    if kind in ("pgemv", "pgemm"):
+        return packing.project(x, packing.lookup(weight), config, _merge)
     m, k = x.shape
     n = weight.shape[0]
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
@@ -129,17 +140,24 @@ def _cold_graph_time(fn, flush):
 
 _CHOICES = {}
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 50.0
-_SHAPE_SECONDS = 10.0
+_PROCESS_SECONDS = 80.0
+_SHAPE_SECONDS = 16.0
 
 
-def _candidates(m, n, k):
+def _candidates(m, n, k, packed):
     """Layouts in order of prior plausibility; the deadline truncates the tail."""
     def gemm(block_n, block_k):
         splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
         return ("gemm", block_n, block_k, splits, 4)
 
-    configs = [gemm(64, 128)]
+    configs = []
+    if packed:
+        # Lossless 12-bit planes first: they carry 25% less memory traffic.
+        if m == 1:
+            configs += [("pgemv", 8, 512, 1, 4), ("pgemv", 16, 256, 1, 4)]
+        else:
+            configs += [("pgemm",) + gemm(64, 128)[1:], ("pgemm",) + gemm(128, 128)[1:]]
+    configs.append(gemm(64, 128))
     if m == 1:
         configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4), ("gemv", 4, 1024, 1, 4)]
         if k >= 8192:
@@ -157,33 +175,46 @@ def _choose(x, weight):
     if _TUNING_DEADLINE is None:
         _TUNING_DEADLINE = now + _PROCESS_SECONDS
     if now >= _TUNING_DEADLINE:
-        return None
+        return None, None
     # Every workload is a fresh process: bound each shape and the process so
     # compilation fits the load/warmup and whole-run budgets, and so one slow
     # shape cannot leave the later projections unmeasured.
     shape_deadline = min(_TUNING_DEADLINE, now + _SHAPE_SECONDS)
     m, k = x.shape
     n = weight.shape[0]
-    configs = _candidates(m, n, k)
+    packed = packing.lookup(weight)
+    configs = _candidates(m, n, k, packed is not None)
     # Private generator: tuning must not change any caller's RNG state.
     generator = torch.Generator(device=x.device).manual_seed(1729)
     probe = torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
     reference = F.linear(probe, weight)
     flush = torch.empty(32 * 1024 * 1024, device=x.device, dtype=torch.int32)
     native_ms = _cold_graph_time(lambda: F.linear(x, weight), flush)
+    # Track the best layout overall and the best one that reads plain BF16
+    # weights: a matrix that could not be packed falls back to the latter.
     best_ms, best = native_ms, None
+    plain_ms, plain = native_ms, None
     for config in configs:
         if time.monotonic() >= shape_deadline:
             break
-        actual = _project(probe, weight, config)
+        is_packed = config[0] in ("pgemv", "pgemm")
+        try:
+            actual = _project(probe, weight, config)
+        except Exception as error:  # a layout that cannot compile is not a candidate
+            print(f"projection layout {config} skipped: {error!r}", flush=True)
+            continue
         # Reject a kernel that fails an operator sanity check. Full-model
         # correctness still comes from the platform's own-prefix replay.
         close = (actual.float() - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001
         if not bool(close.all()):
             continue
+        if is_packed and not packing.exact_columns(weight, packed, config, _merge, m):
+            continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config), flush)
         if elapsed < best_ms * 0.985:
             best_ms, best = elapsed, config
+        if not is_packed and elapsed < plain_ms * 0.985:
+            plain_ms, plain = elapsed, config
     if best is not None:
         # Recheck after compilation/tuning so GPU clock ramp-up cannot make a
         # later candidate look faster than an initially cold native baseline.
@@ -191,8 +222,11 @@ def _choose(x, weight):
         best_ms = _cold_graph_time(lambda: _project(x, weight, best), flush)
         if best_ms >= native_ms * 0.985:
             best_ms, best = native_ms, None
+    if plain is not None and plain is not best:
+        if _cold_graph_time(lambda: _project(x, weight, plain), flush) >= native_ms * 0.985:
+            plain = None
     print(f"BF16 projection warmup: backend={best or 'cublas'} cold_graph_ratio={best_ms / native_ms:.3f}", flush=True)
-    return best
+    return best, plain
 
 
 def linear(x, weight):
@@ -205,7 +239,9 @@ def linear(x, weight):
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("projection selection must finish during eager warmup")
         _CHOICES[key] = _choose(flat, weight)
-    choice = _CHOICES[key]
+    choice, plain = _CHOICES[key]
+    if choice is not None and choice[0] in ("pgemv", "pgemm") and packing.lookup(weight) is None:
+        choice = plain
     if choice is None:
         return F.linear(x, weight)
     return _project(flat, weight, choice).reshape(*x.shape[:-1], weight.shape[0])
