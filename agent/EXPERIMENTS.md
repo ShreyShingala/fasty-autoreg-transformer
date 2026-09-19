@@ -1629,3 +1629,23 @@ enqueued for the slowest row are still in flight when the generation ends, so
 the next sample's prefill queues behind them; the whole-system review called
 this out at lookahead 2 already). `SPEC_LOOKAHEAD_WIDE` back to 2. The numpy
 views and candidates 87/88 stay (both measured neutral on their own).
+
+Result (candidate 91, `c758faf`): **1144.3**, normalized **1143.7**, 692 s;
+public TTFT/TPOT 10.5/3.021, 118.7/3.807, 107.6/4.180 ms. New best.
+This supersedes the old handoff's apparent regression; do not revert c87/c88
+while c93 (two passes + 24 s refinement) is still measuring.
+
+## Candidate 94 - direct host-memory completion-stamp reads
+
+Hypothesis: `Mailbox.ready` still polls `int(self.flags[slot])`, constructing
+and extracting a Torch scalar on every spin. Cache `flags.numpy()` once and
+read the shared view, like the existing token and pass buffers. The pinned
+allocation, ordered payload/stamp copies, generation sequence numbers, timeout,
+and event fallback remain the same. No model operation or launch changes.
+Local CPU timing measures host overhead only; the remote run decides payoff.
+
+Local c94 checks: 10 unit tests, archive validation (45,960 bytes), full
+interpreter suite, and 4-layer real-model CPU smoke (115 s, 0 mismatches,
+105 kept-alternative relocations) passed. Mailbox alias/stale-generation/
+fallback checks passed; Mac poll microbenchmark: Torch 654 ns, view 124 ns
+(medians of five 100,000-call runs). No GPU-speed claim from that timing.
