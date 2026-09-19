@@ -1299,3 +1299,16 @@ replays. Expected: floor lower by the launch latency's share of a ~4.3 ms pass
 (1-2%), i.e. that much more batch-1 speed on floor-bound samples; steadier
 inputs for refine/choose_block. Spread risk: the floor was calibrated in the
 simulator in units of TRUE pass time, which this now is.
+
+## Candidate 71 - TTFT-aware pacing floor (held)
+
+From the pacing analysis (`~/.cache/fasty-lab/plan/pacing.md`, rec. 1): the
+spread gate compares whole samples, so with fastest = ttft + F x D and slowest
+plausible = ttft + 0.90 x D, slowest <= 1.25 x fastest gives
+F >= (0.90 x D - 0.25 x ttft) / (1.25 x D). Prefill time is measured at warmup
+(three replays of the captured prefill graph). Clamped to [0.60, 0.70]: never
+above today's floor, so nothing can get slower; 512-token prompts at batch one
+stay at 0.70, a 2048-token prompt at batch one gets 0.667 (offline: +0.9% on
+platform-like text, +6% on easy text), batches >= 4 rarely sit on the floor.
+Long outputs (>= 96) keep 0.60. Gain exists only if a hidden workload has a
+small batch with a long prompt; the public cases should not move.

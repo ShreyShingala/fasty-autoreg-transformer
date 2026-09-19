@@ -75,6 +75,13 @@ PACE_FLOOR = 0.70
 PACE_FLOOR_LONG = 0.60
 LONG_OUTPUT = 96
 PACE_MEDIAN = 0.88
+#: The gate compares whole samples, prefill included: fastest = ttft + F x D,
+#: slowest plausible = ttft + WORST_PASSES x D (D = pass time x steps), and
+#: slowest <= 1.25 x fastest gives F >= (WORST_PASSES x D - 0.25 x ttft) / (1.25 x D).
+#: With a 512-token prompt that is 0.70 again; a long prompt earns a lower
+#: floor (offline: 0.66 at 2048 tokens, batch one). Never above PACE_FLOOR.
+WORST_PASSES = 0.90
+PACE_FLOOR_MIN = 0.60
 
 
 class FusedRMSNorm(torch.nn.Module):
@@ -271,6 +278,7 @@ class DecodeState:
         self.enqueued = 0
         self.graph = None
         self.prefill_graph = None
+        self.prefill_seconds = 0.0
         self.capture_prefill()
         if self.speculative:
             self.choose_block(model, weight)
@@ -386,7 +394,18 @@ class DecodeState:
         self.history.zero_()
         self.stale.fill_(-1)
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
-        self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
+        self.pace_seconds = self.pace_floor() * self.pass_seconds
+
+    def pace_floor(self):
+        """Fastest allowed release, as a fraction of the pass time (shape-only, fixed at warmup)."""
+        outputs = self.shape[2]
+        if outputs >= LONG_OUTPUT:
+            return PACE_FLOOR_LONG
+        decode = (outputs - 1) * self.pass_seconds
+        if decode <= 0.0:
+            return PACE_FLOOR
+        floor = (WORST_PASSES * decode - 0.25 * self.prefill_seconds) / (1.25 * decode)
+        return min(PACE_FLOOR, max(PACE_FLOOR_MIN, floor))
 
     def choose_block(self, model, weight):
         """Measure each candidate block size on this workload's real shape; keep the best.
@@ -567,6 +586,17 @@ class DecodeState:
             with torch.cuda.graph(self.prefill_graph, stream=stream):
                 self.prefill_forward()
             current.wait_stream(stream)
+            # Prefill time of this shape: the pacing floor accounts for it.
+            start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            times = []
+            for _ in range(3):
+                torch.cuda.synchronize(self.device)
+                start.record()
+                self.prefill_graph.replay()
+                end.record()
+                end.synchronize()
+                times.append(start.elapsed_time(end))
+            self.prefill_seconds = sorted(times)[1] / 1000.0
         finally:
             self.cache.prefilling = False
 
@@ -605,7 +635,7 @@ class DecodeState:
                 self.natural.append((self.finished - self.started) / (self.shape[2] - 1))
             self.generations += 1
             self.tokens, self.passes_enqueued, self.passes_read, self.finished = [], 0, 0, None
-            self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
+            self.pace_seconds = self.pace_floor() * self.pass_seconds
             if self.natural:
                 ranked = sorted(self.natural)
                 # Lower median: one slow early generation must not hold the rest back.
