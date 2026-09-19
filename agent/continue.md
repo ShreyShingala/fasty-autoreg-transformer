@@ -28,6 +28,12 @@ https://github.com/john-jpet/fast-transformer +HEAD:refs/remotes/mate/main`),
 so watch their score for that part; then drop the hoisted candidate (restore
 gemm(256,128)) and the split refine budget.
 A self-scheduled cron tick (every 7 min, session-only) drives the loop.
+READ RESULTS WITH `cd agent/tools && python3 collect_runs.py | tail -1 && python3 report_runs.py`:
+one line per run with duration, the node-speed control (native prefill TTFT),
+the NORMALIZED score and public TTFT/TPOT probes. Normalized, c57 1129.7, c58
+1119.9, c62 1107.0, c66 1119.8, and dryfter's copy of c57 scored 1123.9: the
+c57-class engine is ~1120-1125 and c57 itself was a good draw. Only changes of
+>= 2% normalized are readable in one run.
 RULES OF THE ROAD: keep one run measuring + one queued; record run duration
 (`finishedAt - startedAt`) with every score - c52 was canceled at 917 s; every
 warmup second costs six. The harness hides engine stdout on purpose (hidden
