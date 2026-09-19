@@ -230,6 +230,20 @@ def _block_partials(
                     stats[row, head, split, :, 0], stats[row, head, split, :, 1] = maximum, denominator
 
 
+@reference("_block_partials_tma")
+def _block_partials_tma(
+    grid, q_ptr, k_ptr, v_ptr, kd_ptr, vd_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr, out_ptr,
+    LIMIT, TMA, CAPACITY, BLOCK_N, **constants,
+):
+    # Only the ordinary-load twin exists on a CPU; its sums are _block_partials's (reduction order aside).
+    assert not TMA and kd_ptr is k_ptr and vd_ptr is v_ptr, "cpu shim: no tensor maps; TMA attention must fail closed"
+    assert 0 <= CAPACITY - LIMIT < BLOCK_N
+    _block_partials(
+        grid, q_ptr, k_ptr, v_ptr, position_ptr, chain_ptr, partial_ptr, stats_ptr, out_ptr,
+        CAPACITY=CAPACITY, BLOCK_N=BLOCK_N, **constants,
+    )
+
+
 @reference("_block_merge")
 def _block_merge(grid, partial_ptr, stats_ptr, out_ptr, TOKENS, GROUPS, Q_HEADS, KV_HEADS, DIM, SPLITS, BLOCK_S, **launch):
     members = TOKENS * GROUPS

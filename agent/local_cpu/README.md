@@ -14,6 +14,11 @@ docker run --rm --platform linux/amd64 -v "$PWD/engine":/work/engine:ro \
   Signature entries must be in argument order (the helper sorts them).
 - `compile_packed.py`, `test_pack.py`: packed-weight kernels and codec.
 - `check_qk_offsets.py`: flat-offset algebra of the fused Q/K kernel.
+- `compile_attention_tma.py`: `_block_partials_tma` (verify attention with the whole-prefix K/V tiles read
+  through Hopper TMA tensor maps) for T x capacity x BLOCK_N x SPLITS; asserts from the TTGIR that the K and V
+  copies are pipelined (one pair ahead of the loop per stage, one pair per iteration) and prints compile
+  seconds. `STAGES=3` compiles the deeper pipeline. Its ordinary-load twin is proven bit-identical to
+  `_block_partials` by `interp/run_attention_twin.py` (the interpreter has no descriptor-load op).
 
 ## Executing the kernels on the CPU (`interp/`)
 
