@@ -256,6 +256,11 @@ def _choose(x, weight):
     return best
 
 
+def keep_native(rows, weight):
+    """Leave a shape on cuBLAS without spending tuning budget on it."""
+    _CHOICES.setdefault((weight.device, rows, weight.shape[0], weight.shape[1]), None)
+
+
 def linear(x, weight, split_ok=False):
     """x @ weight.T in BF16. With ``split_ok`` the result may be a ``Split`` for a consumer kernel."""
     rows = x.numel() // x.shape[-1]

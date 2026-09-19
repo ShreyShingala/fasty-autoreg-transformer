@@ -1022,3 +1022,12 @@ smoke test (`agent/local_cpu/smoke_engine.py`, 0 mismatches, exact/trans GEMM
 kinds chosen and exercised), every kernel executed in the Triton interpreter
 (`agent/local_cpu/interp/all.sh`, exit 0), offline cuda:90 compile + index
 emulation, unit tests, `dryft validate`.
+
+## Candidate 53 — speculative mode leaves one-token projection shapes on cuBLAS
+
+With speculation on, rows = batch projections run once per generation (the
+prefill tail), yet their probes consumed the shared 24 s tuning budget before
+the second verify-block size was tried. `keep_native` pins them to cuBLAS: the
+budget goes to verify-block shapes and every workload's warmup shrinks (room
+under the 900 s cap). Local smoke test: 0 mismatches, projection tunings per
+process 20 -> 10. Also: the layout check's comparison sits inside its guard.

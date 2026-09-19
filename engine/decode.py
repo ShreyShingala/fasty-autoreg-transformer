@@ -11,7 +11,7 @@ import torch
 
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
-from kernels.linear import linear
+from kernels.linear import keep_native, linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 from kernels.tune import knobs
@@ -225,7 +225,12 @@ class DecodeState:
                 model.lm_head.weight, layer.self_attn.qkv_weight,
                 layer.self_attn.o_proj.weight,
             ):
-                linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
+                if self.speculative:
+                    # One-token rows then run once per generation (the prefill
+                    # tail): the budget belongs to the verify-block shapes.
+                    keep_native(batch, projection)
+                else:
+                    linear(projection.new_zeros((batch, 1, projection.shape[1])), projection)
         # Likewise the launch widths of the small per-layer decode kernels.
         layer = model.model.layers[0]
         hidden = weight.new_zeros((batch, 1, weight.shape[1]))
