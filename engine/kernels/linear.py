@@ -296,7 +296,9 @@ def linear(x, weight, split_ok=False):
         traffic = weight.shape[0] * weight.shape[1] // (36 if weight.shape[0] > 65536 else 1)
         register(
             ("projection",) + key[1:], rows, traffic,
-            [config for _, config in sorted(_VALIDATED.get(key, ()), key=lambda item: item[0])],
+            # The three fastest in isolation: refinement time is scarce, and a
+            # layout that was far behind alone has not won inside the graph.
+            [config for _, config in sorted(_VALIDATED.get(key, ()), key=lambda item: item[0])][:3],
             lambda: _CHOICES[key], lambda config: _CHOICES.__setitem__(key, config),
         )
     choice = _CHOICES[key]
