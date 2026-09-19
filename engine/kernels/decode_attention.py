@@ -382,9 +382,12 @@ def block_attention(query, key, value, position, scale, chain):
             # whole prefix here (counted four times over: attention tiles run
             # further from the bandwidth limit than the GEMMs) against a
             # projection's n x k. At batch 1 x 512 the projections come first;
-            # at batch 4 x 2048 or batch 16 the attention layout does.
+            # at batch 4 x 2048 or batch 16 the attention layout does. Never
+            # below the smaller projections: a single-split layout also drops
+            # the merge launch of every layer, whatever the traffic.
             register(
-                ("block_attention",) + shape[1:], batch * tokens, 8 * batch * capacity * kv_heads * dim, options,
+                ("block_attention",) + shape[1:], batch * tokens,
+                max(8 * batch * capacity * kv_heads * dim, 20_000_000), options,
                 lambda: _BLOCK_LAYOUTS[shape], lambda option: _BLOCK_LAYOUTS.__setitem__(shape, option),
             )
     block_n, splits, warps = _BLOCK_LAYOUTS[shape]
