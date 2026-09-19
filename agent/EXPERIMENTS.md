@@ -1453,3 +1453,14 @@ Interpreter: bit-exact with torch.argmax of the BF16-rounded product on 8
 cases incl. heavy ties; cuda:90 compiles for rows 5/16/32; smoke test 0
 mismatches (30 fused launches). Expected: 1-2% of a batch-1 pass (Exa report:
 Cut Cross-Entropy / FMMS pattern; 1.2x on the head alone at our vocabulary).
+
+Result (candidate 79): commit `d25a167` succeeded, **1114.1** (normalized
+1109.4, node 0.4% faster; c76: 1126.2): about -1.5%. 698 s. Public tok/s 310.3
+/ 543.7 / 3234.5 - the best public-1 ever and a strong public-2 - while the
+hidden aggregate fell. The only part of c79 the public shapes never exercise
+is the per-batch EXPECTED_PASSES table (batch 1 has one candidate; public-1/2
+are long-output shapes it barely moved): reverted first (candidate 82). The
+TMA attention option and the persistent TMA GEMM kinds stay (they can only be
+selected by timing, and public-1/2 improved with them in the list).
+
+## Candidate 82 - c80 (PDL) + fused lm_head/argmax knob, per-batch table reverted
