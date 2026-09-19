@@ -744,6 +744,14 @@ with a toy model and slot-level cache model: equal to sequential greedy in 400
 cases, 17 distinct shapes, 959 alternative branches; kernels compile for
 `cuda:90`.
 
+Result (candidate 30): commit `d14ca21`, run `06f70242` succeeded, ranked
+**1049.503** (discard; best is 1065.5). 32-row blocks at batch 2 lose, as at
+batch 4. public-0 totals p10/p50/p90 104.8/113.3/113.4: two samples pinned at
+the same value, i.e. clamped by the adaptive pace seeded from the (slower)
+warmup generation, which moved the median sample.
+
+## Candidate 36 — the warmup generation never sets the pace
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

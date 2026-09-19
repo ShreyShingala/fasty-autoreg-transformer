@@ -280,7 +280,7 @@ class DecodeState:
         self.tokens, self.passes_enqueued, self.passes_read = [], 0, 0
         self.started, self.pace_seconds, self.pass_seconds = 0.0, 0.0, 0.0
         # Unpaced seconds per token of earlier generations in this process.
-        self.natural, self.finished = [], None
+        self.natural, self.finished, self.generations = [], None, 0
         layer = model.model.layers[0]
         for projection in (
             layer.mlp.gate_up_weight, layer.mlp.down_proj.weight,
@@ -516,8 +516,11 @@ class DecodeState:
         if self.speculative:
             # Passes left by an abandoned generator precede this prefill on the
             # stream; it rewrites the position and the history they used.
-            if self.finished is not None and self.started:
+            # The first generation of a process is the untimed warmup: official
+            # runs showed its slower pace clamping the first measured samples.
+            if self.finished is not None and self.started and self.generations > 1:
                 self.natural.append((self.finished - self.started) / (self.shape[2] - 1))
+            self.generations += 1
             self.tokens, self.passes_enqueued, self.passes_read, self.finished = [], 0, 0, None
             self.pace_seconds = PACE_FLOOR * self.pass_seconds
             if self.natural:
