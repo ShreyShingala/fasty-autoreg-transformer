@@ -1,30 +1,40 @@
 # Continue — Dryft Qwen3 engine
 
-## State (2026-09-19, ~16:20 UTC)
+## State (2026-09-19, ~17:50 UTC)
 
-**Leaderboard #1: 1095.135 tokens/s** (commit `b1ca1cc`, candidate 48; whole run
-710 s against the 900 s cap); teammate fork "dryfter" 1087.3
-(github.com/john-jpet/fast-transformer follows our main; single-pass block
-attention, the prefill gate/up GEMM and the paired block kernel are ported),
-Segfault 1013.9. User target: 1200. Run noise is about +/-1%; only steps of 2%+
-are readable. The loop runs as the `autoresearch` skill. Collect results without
-blocking: `cd agent/tools && python3 collect_runs.py` (rebuilds
-`agent/results.tsv`).
-QUEUE DISCIPLINE (the user complained about a messy submissions page): at most
-two runs queued; hold finished work locally; cancel superseded runs with
-`./bin/dryft cancel <run_id>`.
-In the queue: c49 `80b0ec4` (c48 + ranked candidate drafts), c50 `662342b`
-(+ paired gate/up block kernel as a refine option).
-HELD LOCALLY (not pushed), candidate 51 = commits `53063e7`..HEAD on main:
-mask-free `exact` / transposed `trans` GEMM tiles with whole-block split counts
-(`engine/kernels/gemm.py`), layout inheritance for the second block size tried
-at warmup (it used to run cuBLAS-only once the 24 s tuning budget was spent),
-refine ordered by per-step weight traffic, refine skips a projection knob the
-paired kernel replaces. Push it only after c49/c50 results say which of their
-changes stay; if c49 regresses, revert the ranked drafts with a new commit first.
-Known bad: cuBLASLt preference, forcing 64-row blocks for every short prompt.
-A `git stash` holds older GEMM occupancy variants (maxnreg / more warps; the lab
-found maxnreg only spills and num_stages changes nothing).
+**Leaderboard #1: 1129.7 tokens/s** (commit `c096f57`, candidate 57; whole run
+815 s against the 900 s cap). Silver Bullet 1104.0 (fork
+`sivakovivan/silver-transformer`, tracks our main, consented to idea sharing;
+their one idea - refine each block size before comparing - is in c60), dryfter
+1087.3 (`john-jpet/fast-transformer`), zip 1059.4. User target: 1200.
+Progress today: c48 1095.1 -> c53 1097.7 (GEMM tiles, keep_native) -> c54
+1115.0 (two-stage Triton argmax + trimmed budgets) -> c57 1129.7 (stale-guess
+sibling + cuDNN prefill option + frozen GC).
+In the queue: c58 `663a895` (32 MiB cuBLAS workspace), c60 `b36c802`
+(refine-before-compare + hoisted-x GEMM candidate, refine budget 8 s).
+RULES OF THE ROAD: keep one run measuring + one queued; record run duration
+(`finishedAt - startedAt`) with every score - c52 was canceled at 917 s; every
+warmup second costs six. The harness hides engine stdout on purpose (hidden
+shapes could be encoded in text): do NOT build side channels (e.g. through
+peak memory) - refused once already.
+LOCAL GATES before every push (all exist, ~3 min total):
+`python3 -m unittest discover -s tests`; `./bin/dryft validate engine`;
+`agent/local_cpu/interp/all.sh` (every kernel executed on CPU by a patched
+Triton interpreter); `~/.cache/fasty-lab/venv/bin/python
+agent/local_cpu/smoke_engine.py` (whole engine, real host control flow, 4-layer
+real model vs HF greedy); the offline cuda:90 compile script of any new kernel.
+PLAN + research: `agent/NEXT_PLAN.md`, 15 reports in `~/.cache/fasty-lab/plan/`,
+paste-able research prompt `agent/RESEARCH_PROMPT.md`.
+Key findings: at batch 1 the median sample sits on the pacing floor (0.70 x
+pass time) so pass-TIME cuts convert 1:1; history-copy drafting is at its
+ceiling (a perfect source selector would save only 3-5% of passes); dead in the
+lab today: depth-2 trees, logit re-ranking, hidden-state match selection.
+Parked on worktree branches: speculation for batches 17-64
+(`worktree-agent-a8f491703758a9453`, ~0 expected gain), fused QK-norm/RoPE/KV +
+attention kernel (`worktree-agent-ad7f188c606e1cd22`, bit-exact but compiles
+25-35x slower than the two kernels it replaces).
+Known bad: cuBLASLt preference, forcing 64-row blocks, ranked-draft kernel
+(c49), paired gate/up block kernel (c50).
 
 ## What produced the jump from 933
 
