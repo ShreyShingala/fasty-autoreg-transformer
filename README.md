@@ -3,12 +3,21 @@
 Decode `Qwen/Qwen3-4B-Instruct-2507` at revision
 `cdbee75f17c01a7cc42f958dc650907174af0554`, BF16, on one H100
 
-`engine/engine.py` is the baseline: Transformers, BF16, greedy decode with a KV
-cache.
+`engine/engine.py` now uses a static BF16 KV cache, CUDA graph decode, grouped
+SDPA without KV-head duplication, and fused RMSNorm. H100 numerical correctness
+and performance are still unmeasured. See [experiment notes](agent/EXPERIMENTS.md)
+for the implementation, validation commands, and outstanding checks. The original
+baseline remains available at commit `e35c206`.
+
+**Current event workflow:** the docs supplied on September 19 retire public runs
+and direct archive uploads. Validate locally, then push to the connected default
+branch to create a submission. Auto-run may immediately start an official run.
+The engine contract and optimization guide still contain the older public-run
+workflow; use the current workflow below for submissions.
 
 Read the [Docs](https://htn.dryft.ai/docs) before you optimize
-(workloads, timing, output rule, scoring). `QWEN_ENGINE_CONTRACT.md` is the same
-guide for offline use. Then read `OPTIMIZATION_GUIDE.md` for the pinned model
+(workloads, timing, output rule, scoring). `QWEN_ENGINE_CONTRACT.md` contains the
+local engine interface guide. Then read `OPTIMIZATION_GUIDE.md` for the pinned model
 architecture, tensor shapes, execution graph, and staged examples of replacing
 Transformers operations.
 
@@ -22,11 +31,11 @@ Transformers operations.
    **Connect a repository**, grant the GitHub App access, and set
    **Engine folder** to `engine`.
 5. Push to the default branch, or use **Run now** in
-   [Repositories](https://htn.dryft.ai/repos). Check the public
-   sample results before changing the engine.
+   [Repositories](https://htn.dryft.ai/repos). Check the workload
+   results before changing the engine.
 
-Public runs are feedback. Request an official evaluation to appear on the
-leaderboard.
+Every run is official. Six hidden workloads determine the score; the three
+public workloads provide additional feedback. Official runs require confirmation.
 
 No local GPU or Python setup is required. Edit `engine/engine.py` and push
 again. For CLI submissions, see [Submitting](#submitting).
@@ -35,8 +44,10 @@ again. For CLI submissions, see [Submitting](#submitting).
 
 | Path | Submitted | What it is |
 | --- | --- | --- |
-| `engine/engine.py` | yes | Your engine. Native Qwen until you replace it. |
-| `engine/kernels/` | yes | Worked Triton example. Delete it or build on it. |
+| `engine/engine.py` | yes | Model loading and streaming generation. |
+| `engine/decode.py` | yes | Static KV cache and graph capture. |
+| `engine/attention.py` | yes | Grouped single-token SDPA. |
+| `engine/kernels/` | yes | Fused BF16 RMSNorm. |
 | `agent/` | no | Autoresearch loop. Runs on your machine. |
 | `bin/` | no | Installed Dryft CLI. |
 | `requirements.txt` | no | Container versions, for a local GPU. |
@@ -88,13 +99,15 @@ export DRYFT_TOKEN='dryft_pat_...'
 
 ./bin/dryft doctor
 ./bin/dryft validate engine
-./bin/dryft submit engine
-./bin/dryft run <submission-id> --mode public --wait 3000
+git add engine
+git commit -m "Optimize Qwen decode"
+git push origin HEAD
 ```
 
-`submit` prints the submission ID that `run` needs. The CLI already knows the
-event server, so most people only need `DRYFT_TOKEN`. Set `DRYFT_API` only for
-local development, staging, or a self-hosted server.
+The push creates a submission and, when Auto-run is enabled, starts an official
+run. Copy the submission ID from Dryft to rerun it with
+`./bin/dryft run <submission-id> --mode official --wait 3000`. The CLI already
+knows the event server. Set `DRYFT_API` only for a different deployment.
 
 ```sh
 ./bin/dryft submissions                  # latest 25 submissions
@@ -108,7 +121,7 @@ The CLI accepts the engine folder, `engine.py`, or an existing `.tar.gz`. To
 package by hand, run this from the starter folder:
 
 ```sh
-cd engine && tar -czf ../submission.tar.gz engine.py kernels
+cd engine && tar -czf ../submission.tar.gz engine.py decode.py attention.py kernels
 ```
 
 Name the files explicitly. `tar -C engine .` writes paths such as `./engine.py`,

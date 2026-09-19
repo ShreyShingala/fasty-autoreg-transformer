@@ -1,14 +1,9 @@
-"""Native Qwen3 4B engine: the starter, and a complete submission as it is.
-
-Loads the pinned checkpoint with Transformers and decodes greedily with a KV
-cache. Submit unchanged to measure starting throughput, then improve it:
-cache layout, CUDA graphs, fused kernels, chunked prefill, speculative decoding
-with exact verification. What you may not change is the answer: every token
-must be the one native Qwen picks, judged by a teacher-forced replay.
-"""
+"""BF16 Qwen3 with a reusable KV cache and one CUDA graph per decode shape."""
 
 import torch
 from transformers import AutoModelForCausalLM
+
+from decode import DecodeState, optimize_model
 
 
 class Engine:
@@ -26,6 +21,8 @@ class Engine:
             .eval()
             .to("cuda:0")
         )
+        optimize_model(self.model)
+        self.state = None
 
     def generate(self, input_ids: list[list[int]], max_new_tokens: int):
         """Greedy continuation of every sequence, one step at a time.
@@ -34,17 +31,27 @@ class Engine:
         exactly max_new_tokens times. Every sequence has the same length.
         Never stops at end-of-sequence tokens.
         """
-        current = torch.tensor(input_ids, dtype=torch.int64, device="cuda:0")
-        cache = None
+        if max_new_tokens <= 0:
+            return
+        if not input_ids or not input_ids[0]:
+            raise ValueError("generate requires a nonempty batch and prompt")
+        shape = (len(input_ids), len(input_ids[0]), max_new_tokens)
+        if any(len(row) != shape[1] for row in input_ids):
+            raise ValueError("all prompts must have the same length")
+
         with torch.inference_mode():
-            for _ in range(max_new_tokens):
-                output = self.model(
-                    input_ids=current,
-                    past_key_values=cache,
-                    use_cache=True,
-                    logits_to_keep=1,
-                    return_dict=True,
-                )
-                current = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-                cache = output.past_key_values
-                yield current[:, 0].tolist()
+            if self.state is None or self.state.shape != shape:
+                # The harness reuses a shape after warmup. Bound memory if a
+                # local caller changes it rather than retaining many graphs.
+                self.state = None
+                self.state = DecodeState(self.model, shape)
+            state = self.state
+            prompt = torch.tensor(input_ids, dtype=torch.int64, device=state.device)
+            state.prefill(prompt)
+            tokens = state.token_ids[:, 0].tolist()
+        yield tokens
+        for _ in range(max_new_tokens - 1):
+            with torch.inference_mode():
+                state.graph.replay()
+                tokens = state.token_ids[:, 0].tolist()
+            yield tokens

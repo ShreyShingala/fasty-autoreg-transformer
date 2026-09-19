@@ -1,12 +1,7 @@
-"""Qwen3's RMSNorm in Triton, written to match the reference exactly.
+"""Qwen3's RMSNorm in Triton, preserving the reference's BF16 cast boundaries.
 
-Nothing imports this. It is here to demonstrate the two things the baseline
-never shows: how a module beside ``engine.py`` is vendored and imported, and how
-closely a fused kernel has to follow the reference's arithmetic to stay inside
-the tie margin.
-
-To use it, swap it in for the ``Qwen3RMSNorm`` modules on the loaded model in
-``Engine.__init__``. Delete this package if you would rather start clean.
+Installed by ``decode.optimize_model`` for hidden and per-head norms.
+Reduction order can differ; this does not promise bitwise-identical outputs.
 """
 
 import torch
@@ -20,7 +15,7 @@ MAX_BLOCK = 8192
 
 @triton.jit
 def _rms_norm_kernel(x_ptr, w_ptr, y_ptr, row_stride, n_cols, eps, BLOCK: tl.constexpr):
-    row = tl.program_id(0)
+    row = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK)
     mask = cols < n_cols
     offsets = row * row_stride + cols
@@ -66,6 +61,6 @@ def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
         n_cols,
         eps,
         BLOCK=block,
-        num_warps=max(4, min(16, block // 256)),
+        num_warps=4 if block <= 4096 else 8,
     )
     return out.reshape(shape)
