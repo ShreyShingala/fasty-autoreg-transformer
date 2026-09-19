@@ -24,11 +24,15 @@ MAX_EXCEPTIONS = 16
 
 
 class Packed:
-    __slots__ = ("sm", "ex", "base", "ecol", "eval", "width", "shape")
+    __slots__ = ("sm", "ex", "sm32", "ex32", "base", "ecol", "eval", "width", "shape")
 
     def __init__(self, sm, ex, base, ecol, evalues, width, shape):
         self.sm, self.ex, self.base = sm, ex, base
         self.ecol, self.eval, self.width, self.shape = ecol, evalues, width, shape
+        # Word-granular views of the same bytes (rows hold K and K/2 bytes).
+        whole = shape[1] % 8 == 0
+        self.sm32 = sm.view(torch.int32) if whole else None
+        self.ex32 = ex.view(torch.int32) if whole else None
 
 
 def _fields(weight):
@@ -144,11 +148,33 @@ def _decode16(sm, code, base):
     return bits.to(tl.uint16).to(tl.bfloat16, bitcast=True)
 
 
+@triton.jit
+def _load_words(sm_ptr, ex_ptr, rows, live, start, K: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    """The same planes read as little-endian int32: 4 bytes or 8 codes a load.
+
+    Byte i of a word is column 4w+i and nibble j is column 8w+j, which is the
+    byte layout itself, so the planes need no second copy.
+    """
+    quad = start // 4 + tl.arange(0, BLOCK_K // 4)
+    words = tl.load(
+        sm_ptr + rows[:, None] * (K // 4) + quad[None, :],
+        live[:, None] & (quad[None, :] < K // 4), other=0,
+    )
+    sm = tl.reshape((words[:, :, None] >> (tl.arange(0, 4) * 8)[None, None, :]) & 0xFF, (BLOCK_N, BLOCK_K))
+    octet = start // 8 + tl.arange(0, BLOCK_K // 8)
+    codes = tl.load(
+        ex_ptr + rows[:, None] * (K // 8) + octet[None, :],
+        live[:, None] & (octet[None, :] < K // 8), other=0,
+    )
+    code = tl.reshape((codes[:, :, None] >> (tl.arange(0, 8) * 4)[None, None, :]) & 15, (BLOCK_N, BLOCK_K))
+    return sm, code
+
+
 @triton.jit(do_not_specialize=["base"])
 def _packed_gemv(
     x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base,
     N: tl.constexpr, K: tl.constexpr, E: tl.constexpr,
-    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr, WORDS: tl.constexpr,
 ):
     rows = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     live = rows < N
@@ -159,15 +185,18 @@ def _packed_gemv(
         k = start + columns
         pair = start // 2 + pairs
         x = tl.load(x_ptr + k, k < K, other=0).to(tl.float32)
-        sm = tl.load(
-            sm_ptr + rows[:, None] * K + k[None, :],
-            live[:, None] & (k[None, :] < K), other=0,
-        )
-        nibbles = tl.load(
-            ex_ptr + rows[:, None] * (K // 2) + pair[None, :],
-            live[:, None] & (pair[None, :] < K // 2), other=0,
-        ).to(tl.int32)
-        code = tl.interleave(nibbles & 15, nibbles >> 4)
+        if WORDS:
+            sm, code = _load_words(sm_ptr, ex_ptr, rows, live, start, K, BLOCK_N, BLOCK_K)
+        else:
+            sm = tl.load(
+                sm_ptr + rows[:, None] * K + k[None, :],
+                live[:, None] & (k[None, :] < K), other=0,
+            )
+            nibbles = tl.load(
+                ex_ptr + rows[:, None] * (K // 2) + pair[None, :],
+                live[:, None] & (pair[None, :] < K // 2), other=0,
+            ).to(tl.int32)
+            code = tl.interleave(nibbles & 15, nibbles >> 4)
         acc += _decode32(sm, code, base) * x[None, :]
     result = tl.sum(acc, axis=1)
     slots = tl.arange(0, BLOCK_E)
@@ -184,7 +213,7 @@ def _packed_gemm(
     x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base,
     M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, E: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr,
-    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr, WORDS: tl.constexpr,
 ):
     rows = tl.arange(0, 16)
     columns = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -200,15 +229,18 @@ def _packed_gemm(
             x_ptr + rows[:, None] * K + k[None, :],
             (rows[:, None] < M) & (k[None, :] < K), other=0,
         )
-        sm = tl.load(
-            sm_ptr + columns[:, None] * K + k[None, :],
-            live[:, None] & (k[None, :] < K), other=0,
-        )
-        nibbles = tl.load(
-            ex_ptr + columns[:, None] * (K // 2) + pair[None, :],
-            live[:, None] & (pair[None, :] < K // 2), other=0,
-        ).to(tl.int32)
-        code = tl.interleave(nibbles & 15, nibbles >> 4)
+        if WORDS:
+            sm, code = _load_words(sm_ptr, ex_ptr, columns, live, start, K, BLOCK_N, BLOCK_K)
+        else:
+            sm = tl.load(
+                sm_ptr + columns[:, None] * K + k[None, :],
+                live[:, None] & (k[None, :] < K), other=0,
+            )
+            nibbles = tl.load(
+                ex_ptr + columns[:, None] * (K // 2) + pair[None, :],
+                live[:, None] & (pair[None, :] < K // 2), other=0,
+            ).to(tl.int32)
+            code = tl.interleave(nibbles & 15, nibbles >> 4)
         # The same BF16 tensor-core product with FP32 accumulation as the
         # unpacked kernel: the decoded operands are bit-identical BF16.
         acc = tl.dot(x, tl.trans(_decode16(sm, code, base)), acc)
@@ -268,19 +300,22 @@ def project(x, packed, config, merge):
     n = packed.shape[0]
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
     block_e = triton.next_power_of_2(packed.width)
-    if kind == "pgemv":
+    words = kind in ("pwgemv", "pwgemm")
+    sm, ex = (packed.sm32, packed.ex32) if words else (packed.sm, packed.ex)
+    if kind in ("pgemv", "pwgemv"):
         _packed_gemv[(triton.cdiv(n, block_n),)](
-            x, packed.sm, packed.ex, packed.ecol, packed.eval, out, packed.base,
+            x, sm, ex, packed.ecol, packed.eval, out, packed.base,
             N=n, K=k, E=packed.width, BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_E=block_e,
-            num_warps=warps,
+            WORDS=words, num_warps=warps,
         )
         return out
     partial = out if splits == 1 else torch.empty((splits, m, n), device=x.device, dtype=torch.float32)
     chunk = triton.cdiv(k, splits * block_k) * block_k
     _packed_gemm[(triton.cdiv(n, block_n), splits)](
-        x, packed.sm, packed.ex, packed.ecol, packed.eval, partial, packed.base,
+        x, sm, ex, packed.ecol, packed.eval, partial, packed.base,
         M=m, N=n, K=k, E=packed.width, SPLITS=splits, CHUNK=chunk,
-        BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_E=block_e, num_warps=warps, num_stages=2,
+        BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_E=block_e, WORDS=words,
+        num_warps=warps, num_stages=2,
     )
     if splits > 1:
         merge(partial, out, m * n, splits)
@@ -304,6 +339,8 @@ def exact_columns(weight, packed, config, merge, rows):
         x[torch.arange(rows), chosen] = 1.0
         actual = project(x, packed, config, merge)
         expected = weight[:, chosen].t().contiguous()
-        if not torch.equal(actual.view(torch.int16), expected.view(torch.int16)):
+        # +0.0 + (-0.0 * 1) is +0.0 in every kernel: compare zeros by value.
+        differs = (actual.view(torch.int16) != expected.view(torch.int16)) & ~((actual == 0) & (expected == 0))
+        if bool(differs.any()):
             return False
     return True

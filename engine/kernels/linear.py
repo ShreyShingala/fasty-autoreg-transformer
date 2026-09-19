@@ -90,7 +90,7 @@ def _merge(partial, out, count, splits):
 
 def _project(x, weight, config):
     kind, block_n, block_k, splits, warps = config
-    if kind in ("pgemv", "pgemm"):
+    if kind in _PACKED_KINDS:
         return packing.project(x, packing.lookup(weight), config, _merge)
     m, k = x.shape
     n = weight.shape[0]
@@ -139,9 +139,10 @@ def _cold_graph_time(fn, flush):
 
 
 _CHOICES = {}
+_PACKED_KINDS = ("pgemv", "pwgemv", "pgemm", "pwgemm")
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 80.0
-_SHAPE_SECONDS = 16.0
+_PROCESS_SECONDS = 100.0
+_SHAPE_SECONDS = 20.0
 
 
 def _candidates(m, n, k, packed):
@@ -154,9 +155,15 @@ def _candidates(m, n, k, packed):
     if packed:
         # Lossless 12-bit planes first: they carry 25% less memory traffic.
         if m == 1:
-            configs += [("pgemv", 8, 512, 1, 4), ("pgemv", 16, 256, 1, 4)]
+            configs += [("pgemv", 8, 512, 1, 4)]
+            if k % 8 == 0:
+                configs += [("pwgemv", 8, 512, 1, 4), ("pwgemv", 16, 256, 1, 4), ("pwgemv", 8, 512, 1, 8)]
+            configs += [("pgemv", 16, 256, 1, 4)]
         else:
-            configs += [("pgemm",) + gemm(64, 128)[1:], ("pgemm",) + gemm(128, 128)[1:]]
+            configs += [("pgemm",) + gemm(64, 128)[1:]]
+            if k % 8 == 0:
+                configs += [("pwgemm",) + gemm(64, 128)[1:], ("pwgemm",) + gemm(128, 128)[1:]]
+            configs += [("pgemm",) + gemm(128, 128)[1:]]
     configs.append(gemm(64, 128))
     if m == 1:
         configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4), ("gemv", 4, 1024, 1, 4)]
@@ -197,7 +204,7 @@ def _choose(x, weight):
     for config in configs:
         if time.monotonic() >= shape_deadline:
             break
-        is_packed = config[0] in ("pgemv", "pgemm")
+        is_packed = config[0] in _PACKED_KINDS
         try:
             actual = _project(probe, weight, config)
         except Exception as error:  # a layout that cannot compile is not a candidate
@@ -223,8 +230,12 @@ def _choose(x, weight):
         if best_ms >= native_ms * 0.985:
             best_ms, best = native_ms, None
     if plain is not None and plain is not best:
-        if _cold_graph_time(lambda: _project(x, weight, plain), flush) >= native_ms * 0.985:
+        plain_ms = _cold_graph_time(lambda: _project(x, weight, plain), flush)
+        if plain_ms >= native_ms * 0.985:
             plain = None
+        elif best is None:
+            # The packed winner failed its recheck; the plain layout stands.
+            best_ms, best = plain_ms, plain
     print(f"BF16 projection warmup: backend={best or 'cublas'} cold_graph_ratio={best_ms / native_ms:.3f}", flush=True)
     return best, plain
 
@@ -240,7 +251,7 @@ def linear(x, weight):
             raise RuntimeError("projection selection must finish during eager warmup")
         _CHOICES[key] = _choose(flat, weight)
     choice, plain = _CHOICES[key]
-    if choice is not None and choice[0] in ("pgemv", "pgemm") and packing.lookup(weight) is None:
+    if choice is not None and choice[0] in _PACKED_KINDS and packing.lookup(weight) is None:
         choice = plain
     if choice is None:
         return F.linear(x, weight)
