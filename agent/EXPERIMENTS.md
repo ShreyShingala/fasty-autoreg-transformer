@@ -710,6 +710,27 @@ Suspect: the skinny GEMM reloads its x block per output tile (16 live rows x
 tiles for blocks of more than 4 rows and re-added in-situ refinement, now
 timing the captured verify graph itself (12 s bound, 1% threshold).
 
+## Lab report (subagent, 276 fresh samples, six corpora; `~/.cache/fasty-lab/REPORT.md`)
+
+- Batch one is set by pacing, not drafting: unpaced, five samples violate the
+  25% spread gate 74-96% of the time; PACE 0.70 -> 0%, 0.65 -> 3.5%,
+  0.60 -> 10-14%. Worst samples run at 0.73-0.87 passes per token.
+- Best static split per row budget R (passes/token, prompt 512, 32 / 128
+  outputs): R=2 .819/.744; R=4 c2+f2 .730/.638; R=8 c3+f5 / c4+f4 .658/.559;
+  R=16 c6+f10 / c8+f8 .613/.505. Flat optimum. Prose prefers alternatives,
+  code prefers chains.
+- Batch effect (slowest row): B=4,R=4 .828/.756; B=8,R=2 .922/.862;
+  B=16,R=2 .937/.874. A 32-row pass pays at B=16 only if it costs < 6% (32
+  outputs) or < 14% (128 outputs) more than a 16-row pass.
+- Dealing extra rows to the furthest-behind sequence is worse (2-18%);
+  re-dividing rows among unfinished sequences helps 1-3%.
+- Policy P* (longest suffix up to 5, most frequent continuation, chain length
+  by match length, scored alternatives): -1.5 to -3.9% passes at R=3-8,
+  cross-validated. Not yet implemented (needs data-driven masks).
+- No gain: longer suffixes alone, mid-chain re-matching, deeper alternatives.
+
+## Candidate 34 — pace floor 0.70, lower running median
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

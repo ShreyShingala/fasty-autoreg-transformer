@@ -52,8 +52,10 @@ SPEC_LOOKAHEAD = 2
 #: as long as it stays below the median. Tokens are released no faster than
 #: PACE_MEDIAN of the running median of this process's own unpaced speeds
 #: (warmup included; timing only, never tokens), and never faster than
-#: PACE_FLOOR of one verify pass.
-PACE_FLOOR = 0.60
+#: PACE_FLOOR of one verify pass. Offline replays of the model's greedy text
+#: (276 samples, six corpora): five unpaced batch-one samples break the 25%
+#: spread gate 74-96% of the time; a 0.70 floor never did, 0.65 did 3.5%.
+PACE_FLOOR = 0.70
 PACE_MEDIAN = 0.88
 
 
@@ -520,7 +522,8 @@ class DecodeState:
             self.pace_seconds = PACE_FLOOR * self.pass_seconds
             if self.natural:
                 ranked = sorted(self.natural)
-                self.pace_seconds = max(self.pace_seconds, PACE_MEDIAN * ranked[len(ranked) // 2])
+                # Lower median: one slow early generation must not hold the rest back.
+                self.pace_seconds = max(self.pace_seconds, PACE_MEDIAN * ranked[(len(ranked) - 1) // 2])
         self.prompt_ids.copy_(prompt)
         self.prefill_graph.replay()
         self.snapshot()
