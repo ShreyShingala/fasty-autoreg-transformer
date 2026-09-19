@@ -263,8 +263,11 @@ def linear(x, weight, split_ok=False):
             raise RuntimeError("projection selection must finish during eager warmup")
         _CHOICES[key] = _choose(flat, weight)
         # None is cuBLAS. The captured decode step re-judges these layouts.
+        # Refinement order = weight traffic per step: the vocabulary projection
+        # runs once, every other projection once per layer (36 here).
+        traffic = weight.shape[0] * weight.shape[1] // (36 if weight.shape[0] > 65536 else 1)
         register(
-            ("projection",) + key[1:], rows, weight.shape[0] * weight.shape[1],
+            ("projection",) + key[1:], rows, traffic,
             [config for _, config in sorted(_VALIDATED.get(key, ()), key=lambda item: item[0])],
             lambda: _CHOICES[key], lambda config: _CHOICES.__setitem__(key, config),
         )
