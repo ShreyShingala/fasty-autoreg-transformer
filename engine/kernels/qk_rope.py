@@ -55,7 +55,9 @@ def _qk_rope_cache(
         if PREFILL:
             pos = token
         else:
-            pos = tl.load(position).to(tl.int64)
+            # Token t of a decode block lands at position + t (t is 0 for the
+            # ordinary single-token step).
+            pos = tl.load(position).to(tl.int64) + token
         cache_offset = ((batch * KV_HEADS + kv_head) * CAPACITY + pos) * DIM + col
         tl.store(keys + cache_offset, result, valid)
         value_offset = packed_row + (Q_HEADS + KV_HEADS + kv_head) * DIM + col
@@ -67,7 +69,7 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
     """BF16 packed QKV and [B,Hkv,C,D] caches, for prefill or one decode token.
 
     Native BF16 phases [1,T,D] are shared by batch rows. Prefill writes [0,T);
-    decode writes only the device-side scalar position. Return a [B,Hq,T,D]
+    decode writes T slots starting at the device-side scalar position. Return a [B,Hq,T,D]
     view of token-major Q storage (contiguous when T is one).
     """
     batch, kv_heads, capacity, dim = keys.shape
@@ -75,11 +77,11 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
     assert packed.dtype == keys.dtype == values.dtype == torch.bfloat16
     assert packed.is_contiguous() and keys.is_contiguous() and values.is_contiguous()
     assert packed.shape == (batch, tokens, (q_heads + 2 * kv_heads) * dim)
-    assert 0 < tokens <= capacity and (prefill or tokens == 1)
+    assert 0 < tokens <= capacity
     assert values.shape == keys.shape and dim % 2 == 0
     assert cos.numel() == sin.numel() == tokens * dim
     assert cos.is_contiguous() and sin.is_contiguous()
-    assert position.shape == (tokens,) and position.dtype == torch.int64
+    assert position.shape == ((tokens,) if prefill else (1,)) and position.dtype == torch.int64
     # Token-major storage: Flash then returns a token-major output, so the
     # caller's transpose back to [B,T,Hq,D] is already contiguous.
     query = torch.empty((batch, tokens, q_heads, dim), device=packed.device, dtype=packed.dtype)
@@ -93,5 +95,5 @@ def qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_he
         )
 
     # Every option writes the same slots with the same values.
-    launch(1 if prefill else pick(("qk_rope", batch, q_heads, kv_heads, dim, capacity), 4, (1, 2), launch))
+    launch(1 if prefill else pick(("qk_rope", batch * tokens, q_heads, kv_heads, dim, capacity), 4, (1, 2), launch))
     return query.transpose(1, 2)

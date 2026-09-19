@@ -21,6 +21,7 @@ def _decode_partials(
     GROUPS: tl.constexpr, DIM: tl.constexpr, CAPACITY: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr, SCALE: tl.constexpr,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    KV_HEADS: tl.constexpr = 1, SHARED: tl.constexpr = False,
 ):
     group = tl.program_id(0).to(tl.int64)  # flattened (batch, KV head)
     split = tl.program_id(1)
@@ -32,12 +33,19 @@ def _decode_partials(
         heads[:, None] < GROUPS, other=0,
     )
     valid = tl.load(position_ptr).to(tl.int32) + 1
+    cache_group = group
+    if SHARED:
+        # The "batch" is T successive queries of ONE sequence: query t sits at
+        # position + t, so it sees one more slot than query t - 1, and every
+        # query reads the same KV heads.
+        valid += (group // KV_HEADS).to(tl.int32)
+        cache_group = group % KV_HEADS
     begin = split * CHUNK
     end = tl.minimum(tl.minimum(begin + CHUNK, CAPACITY), valid)
     maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
     denominator = tl.zeros((BLOCK_M,), tl.float32)
     accumulator = tl.zeros((BLOCK_M, DIM), tl.float32)
-    cache_base = group * CAPACITY * DIM
+    cache_base = cache_group * CAPACITY * DIM
     for start in range(begin, end, BLOCK_N):
         tokens = start + columns
         key = tl.load(
@@ -95,7 +103,7 @@ def _decode_merge(
     tl.store(out_ptr + head * DIM + dims, numerator / denominator)
 
 
-def _attend(query, key, value, position, scale, config):
+def _attend(query, key, value, position, scale, config, shared=False):
     batch, query_heads, _, dim = query.shape
     kv_heads, capacity = key.shape[1:3]
     groups = query_heads // kv_heads
@@ -108,7 +116,7 @@ def _attend(query, key, value, position, scale, config):
         query, key, value, position, partial, stats,
         GROUPS=groups, DIM=dim, CAPACITY=capacity, SPLITS=splits, CHUNK=chunk,
         SCALE=scale, BLOCK_M=max(16, triton.next_power_of_2(groups)), BLOCK_N=block_n,
-        num_warps=warps, num_stages=2,
+        KV_HEADS=kv_heads, SHARED=shared, num_warps=warps, num_stages=2,
     )
     _decode_merge[(batch * query_heads,)](
         partial, stats, out, GROUPS=groups, DIM=dim, SPLITS=splits,
@@ -213,3 +221,20 @@ def decode_attention(query, key, value, position, scale):
             lambda: _CONFIGS[shape], lambda config: _CONFIGS.__setitem__(shape, config),
         )
     return _attend(query, key, value, position, scale, _CONFIGS[shape])
+
+
+def block_attention(query, key, value, position, scale):
+    """T successive queries of one sequence: Q [T,Hq,1,D], KV [1,Hkv,C,D] -> [T,1,Hq,D].
+
+    Query t is at ``position + t`` and attends to every slot up to itself; the
+    block's own keys must already be in the cache. Same dense kernel as decode.
+    """
+    tokens, query_heads, one, dim = query.shape
+    kv_heads, capacity = key.shape[1:3]
+    assert one == 1 and key.shape[0] == 1 and query_heads % kv_heads == 0
+    assert query.dtype == key.dtype == value.dtype == torch.bfloat16
+    assert query.is_contiguous() and key.is_contiguous() and value.is_contiguous()
+    assert value.shape == key.shape and key.shape[3] == dim and dim in (64, 128)
+    assert position.shape == (1,) and position.dtype == torch.int64
+    config = _default_config(tokens, kv_heads, capacity)
+    return _attend(query, key, value, position, scale, config, shared=True)

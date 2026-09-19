@@ -461,6 +461,29 @@ memory 16.2 GB. Re-judging attention layouts, projection layouts and launch
 widths against the captured step changes nothing. Blind tuning of this design
 is exhausted at about 933; the leaderboard best remains the 945.538 draw.
 
+## Candidate 20 — exact self-speculation for a single sequence
+
+Kernel tuning plateaued at about 933 and custom GPU code must be Triton, so
+the remaining lever is more tokens per weight read. For batch one only
+(shape-only policy), each graphed pass scores the trusted token plus four
+drafts copied from the sequence's own history after the latest earlier
+occurrence of its 3/2/1-token suffix (`engine/speculate.py`). A draft is kept
+only if it equals the model's own argmax there, so output is greedy by
+construction; rejected slots are overwritten before any read. The verify block
+reuses the fused Q/K kernel (slot = position + t) and the dense decode
+attention kernel with a `SHARED` mode (query t sees position + t + 1 slots of
+one KV set). KV capacity has slack for rejected drafts and queued passes.
+Host side: two passes queued, tokens buffered and yielded one per step.
+Because acceptance depends on text, tokens are released no faster than 0.82 of
+one measured pass, bounding best-vs-worst sample spread to about 22%.
+
+Verified on CPU: speculation equals sequential greedy in 600 randomized cases
+(junk history, 1-token prompts); the host queue yields exact tokens in order for
+300 random acceptance patterns; block-mode kernels compile for `cuda:90`.
+Not verified locally: GPU execution of the verify block. Expected signal:
+public-0 TPOT near 0.82 x pass time (about 3.4 ms) if acceptance is decent.
+Removed the in-situ `refine` (no gain, costs warmup). Fallback: `e20537c`.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

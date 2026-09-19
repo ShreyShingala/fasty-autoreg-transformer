@@ -4,7 +4,7 @@ import torch
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
-from kernels.decode_attention import decode_attention
+from kernels.decode_attention import block_attention, decode_attention
 from kernels.linear import linear
 from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
@@ -49,6 +49,15 @@ class PackedAttention(torch.nn.Module):
                 # exactly one dense decode read ending at its own position.
                 attention = decode_attention(
                     query[:, :, -1:, :].contiguous(), key, value, cache_position[-1:], self.scaling,
+                )
+            elif not past_key_value.prefilling and hidden_states.shape[1] > 1:
+                # A verify block of one sequence. The fused kernel stored Q
+                # token-major, which is exactly [T,Hq,1,D] for a single row.
+                assert input_shape[0] == 1
+                tokens = hidden_states.shape[1]
+                attention = block_attention(
+                    query.transpose(1, 2).reshape(tokens, -1, 1, self.head_dim),
+                    key, value, cache_position, self.scaling,
                 )
             elif past_key_value.prefilling:
                 length = hidden_states.shape[1]
