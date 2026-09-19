@@ -14,7 +14,9 @@ from torch.nn import functional as F
 import triton
 import triton.language as tl
 
-from kernels.gemm import _exact_gemm, _hoist_gemm, _tma_gemm, _trans_gemm, exact_splits
+from kernels.gemm import (
+    _exact_gemm, _hoist_gemm, _hoist_trans_gemm, _tma_gemm, _tmah_gemm, _trans_gemm, exact_splits,
+)
 from kernels.merged import Split
 from kernels.tune import register
 
@@ -89,6 +91,11 @@ def _merge_projection(
 # ``tma`` is ``trans`` with the weight tile read through a tensor map. Every
 # path fails closed: without a descriptor ``_project`` launches ``trans`` with
 # the same constants (the same sums), and any exception retires the kind.
+# ``tmah`` is ``tma`` with one x-tile load shared by four weight tiles per
+# program; its fail-safe is ``_hoist_trans_gemm`` on the same grid, and it reads
+# the same [64, 128] descriptor as ``tma`` (one descriptor per weight for both).
+#: Kinds whose weights need a descriptor built in the eager pass.
+TMA_KINDS = ("tma", "tmah")
 #: Descriptor bytes; the blog's tuned value (the struct itself fits in 128).
 TMA_SIZE = 512
 _TMA_OFF = [False]
@@ -188,6 +195,38 @@ def _project(x, weight, config, split_ok=False, strict=False):
             WIDE=max(n * k, splits * m * n) + 8 * block_n * max(k, m) >= 2 ** 31,
             num_warps=warps, num_stages=2,
         )
+    elif kind == "tmah":
+        # "trans" orientation, four TMA weight tiles per program sharing each x-tile load.
+        # The grid, the constants and ``partial`` are the same with or without a descriptor.
+        block_m = _block_m(m)
+        grid = (triton.cdiv(n, 4 * block_n), splits)
+        even_n, even_k = n % (4 * block_n) == 0, splits * chunk == k
+        wide = max(n * k, splits * m * n) + 8 * block_n * max(k, m) >= 2 ** 31
+        launched = False
+        desc = _tma_descriptor(weight, block_n, block_k) if even_n and even_k else None
+        if desc is None and strict:
+            raise RuntimeError("no TMA descriptor for this weight")
+        if desc is not None:
+            try:
+                _tmah_gemm[grid](
+                    x, desc, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+                    BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, TILES=4,
+                    EVEN_M=m == block_m, WIDE=wide,
+                    num_warps=warps, num_stages=2,
+                )
+                launched = True
+            except Exception as error:
+                _tma_retire(error)
+                if strict:
+                    raise
+        if not launched:
+            # No descriptor (capture before its eager pass, retired kind): the same sums, ordinary loads.
+            _hoist_trans_gemm[grid](
+                x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+                BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, TILES=4,
+                EVEN_M=m == block_m, EVEN_N=even_n, EVEN_K=even_k, WIDE=wide,
+                num_warps=warps, num_stages=2,
+            )
     else:
         # kernels/gemm.py: each mask exists only where that axis is ragged.
         block_m = _block_m(m)
@@ -274,9 +313,9 @@ def _candidates(m, n, k):
         # of 8 split programs entirely masked; K=9728 takes 4.
         return (kind, block_n, block_k, exact_splits(k, block_k, gemm(block_n, block_k)[3]), 4)
 
-    def hoisted(block_n, block_k):
+    def hoisted(block_n, block_k, kind="hoist"):
         # Splits sized for programs of four tiles, then made exact.
-        return ("hoist", block_n, block_k, exact_splits(k, block_k, gemm(4 * block_n, block_k)[3]), 4)
+        return (kind, block_n, block_k, exact_splits(k, block_k, gemm(4 * block_n, block_k)[3]), 4)
 
     configs = [gemm(64, 128)]
     if m == 1:
@@ -285,11 +324,18 @@ def _candidates(m, n, k):
         # Verify blocks fill most of the 16/32 input rows, so every tile reloads
         # a large x block: wider output tiles amortize it. Judged in the real
         # verify graph (DecodeState.refine), not only in isolation.
-        if not _TMA_OFF[0] and n % 64 == 0 and k % 128 == 0:
+        tma = not _TMA_OFF[0] and n % 64 == 0 and k % 128 == 0
+        if tma:
             # "trans" with TMA weight loads; offered only while every fail-safe
             # holds, and early: the per-shape budget drops the tail of this list.
             configs.append(tiled("tma", 64, 128))
-        configs += [hoisted(64, 128), tiled("exact", 64, 128), tiled("trans", 64, 128)]
+            if n % (4 * 64) == 0:
+                # "tma" with the x-tile load hoisted over four weight tiles per program.
+                configs.append(hoisted(64, 128, "tmah"))
+        configs += [hoisted(64, 128), tiled("exact", 64, 128)]
+        if not tma:
+            # "tma" is "trans" plus TMA loads: only one of the two is ever listed.
+            configs.append(tiled("trans", 64, 128))
     return configs
 
 
@@ -407,8 +453,8 @@ def linear(x, weight, split_ok=False):
             lambda: _CHOICES[key], lambda config: _CHOICES.__setitem__(key, config),
         )
     choice = _CHOICES[key]
-    if rows > 4 and not _TMA_OFF[0] and any(config and config[0] == "tma" for _, config in _VALIDATED.get(key, ())):
-        # Every weight of a shape that validated "tma" gets its descriptor in the
+    if rows > 4 and not _TMA_OFF[0] and any(config and config[0] in TMA_KINDS for _, config in _VALIDATED.get(key, ())):
+        # Every weight of a shape that validated a TMA kind gets its descriptor in the
         # eager pass, so the captured step can re-judge the kind for all layers.
         _tma_descriptor(weight, 64, 128)
     if choice is None:

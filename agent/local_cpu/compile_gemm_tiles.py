@@ -50,15 +50,64 @@ def emulate(kind, grid, c, x, w):
     return out.sum(0)
 
 
+def emulate_hoist_trans(grid, c, x, w):
+    """``_hoist_trans_gemm`` literally: its flat pointer expressions on flat buffers.
+
+    Every lane whose mask is compiled out (EVEN_*) or true must be in bounds;
+    every output cell of every split is written exactly once; FP64 product.
+    "tmah" without a descriptor (always, on a CPU) launches this kernel.
+    """
+    m, n, k, tiles = c["M"], c["N"], c["K"], c["TILES"]
+    block_m, block_n, block_k = c["BLOCK_M"], c["BLOCK_N"], c["BLOCK_K"]
+    xf, wf = x.reshape(-1), w.reshape(-1)
+    out, writes = np.full(c["SPLITS"] * m * n, np.nan), np.zeros(c["SPLITS"] * m * n, int)
+
+    def load(flat, offsets, ok):
+        assert offsets[ok].size == 0 or (0 <= offsets[ok].min() and offsets[ok].max() < flat.size), "out-of-bounds load"
+        return np.where(ok, flat[np.clip(offsets, 0, flat.size - 1)], 0.0)
+
+    for program, split in itertools.product(range(grid[0]), range(grid[1])):
+        rows = np.arange(block_m)
+        columns = program * (tiles * block_n) + np.arange(block_n)
+        ks = split * c["CHUNK"] + np.arange(block_k)
+        row_ok = np.broadcast_to(rows[None, :] < m if not c["EVEN_M"] else True, (block_k, block_m))
+        w_ptrs = columns[:, None] * k + ks[None, :]
+        x_ptrs = ks[:, None] + rows[None, :] * k
+        w_step = block_n * k
+        oks = [np.broadcast_to((columns[:, None] + t * block_n) < n if not c["EVEN_N"] else True, (block_n, block_k))
+               for t in range(tiles)]
+        accs = [np.zeros((block_n, block_m)) for _ in range(tiles)]
+        for step in range(c["CHUNK"] // block_k):
+            k_ok = (ks + step * block_k) < k if not c["EVEN_K"] else np.ones(block_k, bool)
+            xt = load(xf, x_ptrs, k_ok[:, None] & row_ok)  # ONE x tile per K chunk
+            for t in range(tiles):
+                accs[t] += load(wf, w_ptrs + t * w_step, oks[t] & k_ok[None, :]) @ xt
+            w_ptrs, x_ptrs = w_ptrs + block_k, x_ptrs + block_k
+        o_ptrs = split * (m * n) + columns[:, None] + rows[None, :] * n
+        for t in range(tiles):
+            ok = oks[t][:, :1] & row_ok[:1, :]
+            offsets = (o_ptrs + t * block_n)[ok]
+            assert offsets.size == 0 or (0 <= offsets.min() and offsets.max() < out.size), "out-of-bounds store"
+            out[offsets] = accs[t][ok]
+            np.add.at(writes, offsets, 1)
+    assert (writes == 1).all(), "a cell was not written exactly once"
+    return out.reshape(c["SPLITS"], m, n).sum(0)
+
+
 def launches(m, n, k, config):
-    recorders = {name: Recorder(getattr(linear, name)) for name in ("_exact_gemm", "_trans_gemm", "_hoist_gemm")}
+    recorders = {name: Recorder(getattr(linear, name))
+                 for name in ("_exact_gemm", "_trans_gemm", "_hoist_gemm", "_hoist_trans_gemm", "_tmah_gemm")}
     for name, recorder in recorders.items():
         setattr(linear, name, recorder)
+    # No descriptor, as on a GPU before the eager pass. (The real builder needs CUDA: on a CPU it
+    # retires the TMA kinds, and every later _candidates list would silently lose "tmah".)
+    descriptor, linear._tma_descriptor = linear._tma_descriptor, lambda weight, block_n, block_k: None
     try:
         x = torch.zeros((m, k), dtype=torch.bfloat16)
         w = torch.zeros((n, k), dtype=torch.bfloat16)
         linear._project(x, w, config, split_ok=True)
     finally:
+        linear._tma_descriptor = descriptor
         for name, recorder in recorders.items():
             setattr(linear, name, recorder.kernel)
     (name, recorder), = [(a, r) for a, r in recorders.items() if r.calls]
@@ -70,9 +119,14 @@ failures = 0
 # Real shapes: qkv, o, gate_up, down, lm_head at verify-block row counts (even and ragged M).
 for m, (n, k) in itertools.product((5, 16, 32, 48, 64), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     for config in linear._candidates(m, n, k):
-        if config[0] not in ("exact", "trans", "hoist"):
+        if config[0] == "tma":
+            config = ("trans",) + config[1:]  # what "tma" launches without a descriptor; "trans" itself is no longer listed beside it
+        if config[0] not in ("exact", "trans", "hoist", "tmah"):
             continue
         kernel, grid, kwargs = launches(m, n, k, config)
+        # No descriptor on a CPU: "tmah" must launch its ordinary-load twin on the hoisted grid.
+        assert (kernel.__name__ == "_hoist_trans_gemm") == (config[0] == "tmah"), kernel.__name__
+        assert config[0] != "tmah" or grid == (n // 256, config[3])
         constants = {key: value for key, value in kwargs.items() if key not in ("num_warps", "num_stages")}
         assert constants["SPLITS"] * constants["CHUNK"] >= k and (constants["SPLITS"] - 1) * constants["CHUNK"] < k
         try:
@@ -84,10 +138,13 @@ for m, (n, k) in itertools.product((5, 16, 32, 48, 64), ((6144, 2560), (2560, 40
             failures += 1
             print("COMPILE FAILED", m, n, k, config, repr(error)[:300])
 
-# Small shapes through the same _project constants: even and ragged on every axis.
+# Small shapes through the same _project constants: even and ragged on every axis
+# (the last three: whole programs of four tiles, the only layout "tmah" is offered for).
 rng = np.random.default_rng(0)
-for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128), (48, 100, 256), (64, 192, 384)):
-    for kind in ("exact", "trans", "hoist"):
+replayed = 0
+for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128), (48, 100, 256), (64, 192, 384),
+                (16, 512, 384), (5, 256, 256), (32, 768, 640)):
+    for kind in ("exact", "trans", "hoist", "tmah"):
         for splits in (1, 2, 3):
             config = (kind, 64, 128, splits, 4)
             if (splits - 1) * (-(-k // (splits * 128)) * 128) >= k:
@@ -98,4 +155,12 @@ for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (
             if not np.allclose(got, x @ w.T):
                 failures += 1
                 print("EMULATION MISMATCH", m, n, k, config)
+            if kind == "tmah":
+                assert kernel.__name__ == "_hoist_trans_gemm" and kwargs["TILES"] == 4
+                replayed += 1
+                if not np.allclose(emulate_hoist_trans(grid, kwargs, x, w), x @ w.T, rtol=1e-12, atol=1e-12):
+                    failures += 1
+                    print("POINTER REPLAY MISMATCH", m, n, k, config)
+assert not linear._TMA_OFF[0] and replayed, "the TMA kinds were retired: tmah launches were not checked"
+print("hoist-trans pointer replays", replayed)
 print("failures", failures)

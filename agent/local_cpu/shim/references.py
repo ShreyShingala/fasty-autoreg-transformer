@@ -255,7 +255,7 @@ def _gemm(grid, x_ptr, weight_ptr, out_ptr, N, K, SPLITS, CHUNK, BLOCK_N, BLOCK_
         out[split] = x[:, begin:end] @ weight[:, begin:end].to(F32).T if end > begin else 0
 
 
-for _name in ("_gemv", "_skinny_gemm", "_exact_gemm", "_trans_gemm", "_hoist_gemm"):
+for _name in ("_gemv", "_skinny_gemm", "_exact_gemm", "_trans_gemm", "_hoist_gemm", "_hoist_trans_gemm"):
     reference(_name)(_gemm)
 
 
