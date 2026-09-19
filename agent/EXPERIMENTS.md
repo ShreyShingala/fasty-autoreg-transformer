@@ -1116,3 +1116,20 @@ Fused QK-norm/RoPE/KV-write + block attention kernel (subagent, branch
 than the two kernels it replaces (110-155 s under emulation vs 4.4 s), which
 the 900 s run cap cannot absorb across six workloads, and it only applies to
 single-split attention layouts (batch 1 defaults to 18 splits).
+
+Result (candidate 57 = stale-guess sibling + cuDNN prefill option + frozen GC):
+commit `c096f57` succeeded, **1129.7** - new best, #1 (+1.3% over c54); public
+306.1 / 530.0 / 3120.6 (public cases DOWN 1.7-3.5% vs c54 while the hidden
+aggregate rose: public single-run numbers are noisier than the score); whole
+run 815 s (c54: 777 s: ~6 s per workload for the cuDNN probe + new kernels).
+Keep. Silver Bullet 1104.0, dryfter 1087.3.
+
+## Candidate 60 - bundle: refine-before-compare (c59) + hoisted-x GEMM candidate
+
+`hoist`: the `exact` tile kernel with one x-tile load shared by four weight
+tiles per program (at 16-32 input rows the x chunk is 20-33% of the bytes each
+64-row tile program loads; same FP32 sums as `exact`). Replaces gemm(256,128)
+in the verify-block candidate list. Checks: cuda:90 compile on 5 shapes x 3 row
+counts (0.5 s each), numpy replay of the pointer arithmetic (0 failures),
+interpreter within 0.5 ulp, smoke test (211 launches, 0 mismatches). Refine
+budget 8 s split across block sizes to stay under the 900 s cap.

@@ -27,12 +27,13 @@ def emulate(kind, grid, c, x, w):
     m, n, k = c["M"], c["N"], c["K"]
     out = np.full((c["SPLITS"], m, n), np.nan)
     writes = np.zeros((c["SPLITS"], m, n), int)
-    for tile, split in itertools.product(range(grid[0]), range(grid[1])):
+    tiles = c.get("TILES", 1)
+    for program, split, part in itertools.product(range(grid[0]), range(grid[1]), range(tiles)):
         rows = np.arange(c["BLOCK_M"])
-        cols = tile * c["BLOCK_N"] + np.arange(c["BLOCK_N"])
+        cols = (program * tiles + part) * c["BLOCK_N"] + np.arange(c["BLOCK_N"])
         row_ok = rows < m if not c["EVEN_M"] else np.ones_like(rows, bool)
         col_ok = cols < n if not c["EVEN_N"] else np.ones_like(cols, bool)
-        assert rows[row_ok].max() < m and cols[col_ok].max() < n, "unmasked out-of-bounds lane"
+        assert rows[row_ok].max() < m and (not col_ok.any() or cols[col_ok].max() < n), "unmasked out-of-bounds lane"
         acc = np.zeros((c["BLOCK_M"], c["BLOCK_N"]))
         for step in range(c["CHUNK"] // c["BLOCK_K"]):
             ks = split * c["CHUNK"] + step * c["BLOCK_K"] + np.arange(c["BLOCK_K"])
@@ -50,7 +51,7 @@ def emulate(kind, grid, c, x, w):
 
 
 def launches(m, n, k, config):
-    recorders = {name: Recorder(getattr(linear, name)) for name in ("_exact_gemm", "_trans_gemm")}
+    recorders = {name: Recorder(getattr(linear, name)) for name in ("_exact_gemm", "_trans_gemm", "_hoist_gemm")}
     for name, recorder in recorders.items():
         setattr(linear, name, recorder)
     try:
@@ -69,7 +70,7 @@ failures = 0
 # Real shapes: qkv, o, gate_up, down, lm_head at verify-block row counts (even and ragged M).
 for m, (n, k) in itertools.product((5, 16, 32), ((6144, 2560), (2560, 4096), (19456, 2560), (2560, 9728), (151936, 2560))):
     for config in linear._candidates(m, n, k):
-        if config[0] not in ("exact", "trans"):
+        if config[0] not in ("exact", "trans", "hoist"):
             continue
         kernel, grid, kwargs = launches(m, n, k, config)
         constants = {key: value for key, value in kwargs.items() if key not in ("num_warps", "num_stages")}
@@ -86,7 +87,7 @@ for m, (n, k) in itertools.product((5, 16, 32), ((6144, 2560), (2560, 4096), (19
 # Small shapes through the same _project constants: even and ragged on every axis.
 rng = np.random.default_rng(0)
 for m, n, k in ((16, 128, 256), (5, 128, 256), (16, 100, 256), (32, 192, 384), (7, 70, 300), (16, 64, 128)):
-    for kind in ("exact", "trans"):
+    for kind in ("exact", "trans", "hoist"):
         for splits in (1, 2, 3):
             config = (kind, 64, 128, splits, 4)
             if (splits - 1) * (-(-k // (splits * 128)) * 128) >= k:

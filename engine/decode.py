@@ -387,7 +387,7 @@ class DecodeState:
         refined layouts are keyed by row count, so the winner keeps them.
         """
         long_output = self.shape[2] >= LONG_OUTPUT
-        seconds = 10.0 / len(self.candidates)
+        seconds = 8.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:

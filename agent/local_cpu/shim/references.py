@@ -242,9 +242,10 @@ def _block_merge(grid, partial_ptr, stats_ptr, out_ptr, TOKENS, GROUPS, Q_HEADS,
 
 
 def _gemm(grid, x_ptr, weight_ptr, out_ptr, N, K, SPLITS, CHUNK, BLOCK_N, BLOCK_K, M=1, BLOCK_M=None, **launch):
-    assert grid[0] * BLOCK_N >= N and grid[1] == SPLITS and SPLITS * CHUNK >= K and CHUNK % BLOCK_K == 0
+    tiles = launch.get("TILES", 1)  # the hoisted kind covers TILES tiles per program
+    assert grid[0] * tiles * BLOCK_N >= N and grid[1] == SPLITS and SPLITS * CHUNK >= K and CHUNK % BLOCK_K == 0
     assert BLOCK_M is None or BLOCK_M >= M
-    for flag, truth in (("EVEN_M", M == BLOCK_M), ("EVEN_N", N % BLOCK_N == 0), ("EVEN_K", SPLITS * CHUNK == K)):
+    for flag, truth in (("EVEN_M", M == BLOCK_M), ("EVEN_N", N % (tiles * BLOCK_N) == 0), ("EVEN_K", SPLITS * CHUNK == K)):
         assert not launch.get(flag, False) or truth, f"mask-free launch with a ragged axis: {flag}"
     x = flat(x_ptr, M * K).view(M, K).to(F32)
     weight = flat(weight_ptr, N * K).view(N, K)
@@ -254,7 +255,7 @@ def _gemm(grid, x_ptr, weight_ptr, out_ptr, N, K, SPLITS, CHUNK, BLOCK_N, BLOCK_
         out[split] = x[:, begin:end] @ weight[:, begin:end].to(F32).T if end > begin else 0
 
 
-for _name in ("_gemv", "_skinny_gemm", "_exact_gemm", "_trans_gemm"):
+for _name in ("_gemv", "_skinny_gemm", "_exact_gemm", "_trans_gemm", "_hoist_gemm"):
     reference(_name)(_gemm)
 
 
