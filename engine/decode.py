@@ -513,7 +513,11 @@ class DecodeState:
         long_output = self.shape[2] >= LONG_OUTPUT
         # The whole run has room again (612 s of 900 with candidate 67): spend it
         # where layouts are judged inside the real graph.
-        seconds = 16.0 / len(self.candidates)  # every refine call may overrun by one option
+        # Candidate 85 ran the whole six-workload run in 648 s of the 900 s
+        # limit, so the budget goes back up: refinement is the only place a
+        # layout is judged inside the real captured pass, and the audit found
+        # it reaching only two or three options per block size.
+        seconds = 24.0 / len(self.candidates)  # every refine call may overrun by one option
         best = None
         for size in (*self.candidates, None):
             if size is None:

@@ -1605,3 +1605,16 @@ two most-launched kernels (72 + 36 per pass). The knob now covers <= 64 rows,
 and the new embedding+norm kernel gets one too. Same kernel, same values, the
 captured pass decides. Interpreter: 13 PASS across the touched kernels; smoke
 test 0 mismatches.
+
+Merged-team read-out: **dryfter 1123.9 -> 1136.5**. All three queues now sit at
+1136-1140; the dispatches are producing.
+
+## Candidate 92 - refinement budget 16 -> 24 s
+
+Runs now finish in 648-700 s of the 900 s limit. In-graph refinement is the
+only place a layout is judged in the real captured pass (isolated timings
+choose the starting points), and the warmup audit estimated it reaching two or
+three options per block size. Budget back to 24 s, split across block sizes:
+about +8 s per workload, so roughly 700-750 s per run. Read-out: duration
+first, then public-1/2 TPOT (the GEMM kinds are what refinement chooses
+between).
