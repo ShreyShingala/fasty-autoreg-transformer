@@ -16,12 +16,15 @@ at batch 1); c66 1112.9 (warmup bundle: run 815 -> 763 s); **c67 `822ce98`
 1130.6 BEST, 612 s** (TMA descriptor-load GEMM kind + refine on the three
 fastest layouts + runtime COUNT + shared-newline successor table; batch-4 TPOT
 -7%, batch-16 -4%).
-Measuring: c69 `bc52548` (mask-free attention loop only when batch x capacity
->= 6000, attention knob refined first again, tile GEMM for 33-64-row blocks).
-Queued: c70+c71 `73063f2` (pass time measured back to back; TTFT-aware pacing
-floor, clamp [0.60, 0.70]). Held locally, gated: c72 (refine budget 24 s,
-projection tuning 30 s: ~745 s runs), c73 (`tmah` = TMA weight loads + hoisted
-x, fail-closed twin `_hoist_trans_gemm`).
+c69 `bc52548` was CANCELED at the 900 s cap: the 64-row tile GEMM (c68,
+MAX_ROWS 64) opened tuning to many slow-compiling 64-lane shapes; reverted.
+Measuring: c76 `17e882c` = c67 + conditional mask-free attention loop +
+attention knob first + back-to-back pass timing + TTFT-aware pacing floor +
+refine 16 s / projection tuning 28 s + `tmah` + merge-free one-token decode +
+`tma3` (three-deep TMA prefetch ring). Queued: `7cfb7f1` = a SECOND DRAW of the
+c67 engine tree (control + variance harvest). Local HEAD `8184a07` is the c76
+tree again (not pushed): new work stacks on it. NOTE main's history flips
+trees on purpose; compare engine trees with `git diff --stat A B -- engine`.
 Research in flight (reports land in `~/.cache/fasty-lab/plan/`):
 whole_system_review.md, triton31_hopper_features.md (source audit: TMA for
 attention K/V tiles, loop prefetch, num_ctas...), web_hopper_triton.md,
