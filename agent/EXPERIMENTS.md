@@ -891,6 +891,24 @@ prefill graph touches exactly once.
 
 ## Candidate 47 — candidate 46 with persistent prefill-visible buffers
 
+Result (candidate 42, run carrying candidates 38-42): commit `0f40fa8`
+succeeded, ranked **1048.799** (discard as a stack). public 280.1 / 517.7 /
+3212.3: public-2 is the best seen (4 tokens per row at batch 16 through 64
+cuBLAS rows), yet the hidden aggregate is 1.5-2.5% below the level. Suspects in
+the stack: cuBLASLt preference, 64-row blocks at batches 9-16 for other shapes,
+pace floor 0.60 for long outputs, merge fusion itself. Candidates 43 and 44
+differ only by the cuBLASLt and 64-row trials.
+
+Lab draft-policy loop (subagent, 93 variants of 51 ideas, 2-fold CV;
+`~/.cache/fasty-lab/REPORT_DRAFTS.md`): a linear ranker over up to 20 candidate
+first drafts (suffix length, frequency, table rank, unigram count, skip-gram)
+that picks draft 1 and orders the alternatives cuts passes by 2.1% pooled
+[-2.4, -1.8] and about 3% at 3-5 tokens per row; batch metrics -1.1 to -3.5%.
+Depth maps, suffix cap 8 and the 3-alternative cap are already optimal;
+general trees give at most 0.23%. Estimated remaining headroom in this family:
+about 1% more. Not implemented (kernel complexity versus a gain near the
+platform's noise floor).
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
