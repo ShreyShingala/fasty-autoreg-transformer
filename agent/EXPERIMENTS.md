@@ -870,6 +870,15 @@ gate and up tiles together and writes only the activated product (same BF16
 rounding boundaries), saving the SwiGLU pass over [rows, 2I]. Timed against
 cuBLAS + SwiGLU at warmup (10 s bound), kept only if faster. Read TTFT.
 
+## Candidate 46 — block size measured on the real shape at warmup
+
+Replaces the static prompt-length rule of candidate 37: for batches 2-16 the
+engine captures the verify graph for the largest block within 16 rows and the
+largest within 32 rows, times both at the workload's actual context, and keeps
+the smaller (pass time x expected passes per token, `EXPECTED_PASSES` from the
+lab shrunk by the platform's observed factor). Shape-only, decided once at
+warmup. Costs one extra prepare + capture where the two candidates differ.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

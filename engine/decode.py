@@ -28,22 +28,26 @@ DRAFTS_BY_MATCH = {
 }
 
 
-def block_shape(batch, prompt_length):
-    """(tokens per row, chain drafts by match length) from the workload's shape alone.
+#: Expected verify passes per output token for each block size, from offline
+#: replays of the model's greedy text (276 samples) shrunk toward 1 by the
+#: factor seen on the platform's public batch-one case (0.57 of the offline
+#: gain). Only the ratios between sizes matter. Short / long (>= 96) outputs.
+EXPECTED_PASSES = {
+    2: (0.897, 0.854), 3: (0.869, 0.814), 4: (0.846, 0.794), 5: (0.832, 0.777),
+    8: (0.805, 0.749), 16: (0.779, 0.718),
+}
 
-    Official runs: up to 16 rows a pass costs about one ordinary step. 32 rows
-    cost about 5% more through the skinny GEMM at short context, but at
-    4 x 2048 they cost 17% more (the block's attention work doubles) and lost
-    (TPOT 4.21 vs 3.98-4.12 ms), while the hidden aggregate preferred 20-32 row
-    blocks for batches 3-8 (1061-1065 vs 1052). So: 32 rows when the prompt is
-    short, 16 when it is long; batches 9-16 take one draft either way.
-    One token per row means no speculation.
-    """
+
+def block_candidates(batch):
+    """Block sizes worth measuring for this batch: the largest within 16 rows and within 32 rows."""
     if batch > 16:
-        return 1, (0, 0, 0, 0)
-    rows = 16 if (prompt_length >= 1536 or batch <= 2) else 32
-    tokens = max(size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch))
-    return tokens, DRAFTS_BY_MATCH[tokens]
+        return []
+    sizes = []
+    for rows in (16, 32):
+        fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
+        if max(fitting) not in sizes:
+            sizes.append(max(fitting))
+    return sizes if batch > 1 else sizes[:1]
 
 
 #: Verify passes queued behind the GPU.
@@ -185,10 +189,12 @@ class DecodeState:
         # Verify a few proposed tokens per pass (speculate.py). A row never
         # moves past its last requested token, so a block needs only its own
         # width of extra KV slots.
-        self.block_size, self.drafts_by_match = block_shape(batch, prompt_length)
+        self.candidates = block_candidates(batch)
+        self.block_size = self.candidates[0] if self.candidates else 1
+        self.drafts_by_match = DRAFTS_BY_MATCH.get(self.block_size, (0, 0, 0, 0))
         self.speculative = self.block_size > 1 and output_length > 2 and hasattr(model, "successor")
         if self.speculative:
-            self.capacity += self.block_size
+            self.capacity += max(self.candidates)
         self.cache = KVCache(
             model.config, batch, self.capacity, self.device, weight.dtype
         )
@@ -253,7 +259,7 @@ class DecodeState:
         self.prefill_graph = None
         self.capture_prefill()
         if self.speculative:
-            self.capture_speculation()
+            self.choose_block(model, weight)
             self.refine()
         elif output_length > 1:
             self.capture()
@@ -348,7 +354,30 @@ class DecodeState:
         self.pass_seconds = sorted(times)[len(times) // 2] / 1000.0
         self.pace_seconds = (PACE_FLOOR_LONG if self.shape[2] >= LONG_OUTPUT else PACE_FLOOR) * self.pass_seconds
 
-    def refine(self, seconds=20.0):
+    def choose_block(self, model, weight):
+        """Measure each candidate block size on this workload's real shape; keep the best.
+
+        A bigger block needs fewer passes but each pass costs more, and how
+        much more depends on the batch and the context length (attention work
+        scales with the block). Score = measured pass time x expected passes
+        per token. Shape-only: decided once at warmup, before any sample.
+        """
+        long_output = self.shape[2] >= LONG_OUTPUT
+        best = None
+        for size in (*self.candidates, None):
+            if size is None:
+                size = best[1]  # settle on the winner (a no-op if it was measured last)
+                if size == self.block_size:
+                    break
+            if size != self.block_size:
+                self.block_size, self.drafts_by_match = size, DRAFTS_BY_MATCH[size]
+                self.prepare_speculation(model, weight)
+            self.capture_speculation()
+            cost = self.pass_seconds * EXPECTED_PASSES[size][long_output]
+            if best is None or cost < best[0]:
+                best = (cost, size)
+
+    def refine(self, seconds=14.0):
         """Keep a projection layout for the verify block only if the real pass gets faster.
 
         Isolated timings pick the starting layouts; here each validated

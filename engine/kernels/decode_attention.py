@@ -147,7 +147,7 @@ def _graph_time(fn):
 
 _CONFIGS = {}
 _BLOCK_LAYOUTS = {}
-_TUNING_SECONDS = 10.0
+_TUNING_SECONDS = 0.0  # the plain-decode layout search never found a winner; keep the default
 
 
 def _choose(query, key, value, position, scale):

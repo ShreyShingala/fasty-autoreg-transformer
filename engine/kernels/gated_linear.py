@@ -86,7 +86,7 @@ def _choose(x, weight):
     global _DEADLINE
     now = time.monotonic()
     if _DEADLINE is None:
-        _DEADLINE = now + 10.0
+        _DEADLINE = now + 6.0
     if now >= _DEADLINE:
         return None
     # Operator checks use nonzero values, never the zero capture-warmup input.
