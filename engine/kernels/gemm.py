@@ -155,6 +155,51 @@ def _hoist_gemm(
         _store_tile(o_ptrs + 3 * BLOCK_N, acc3, row_ok, ok3, EVEN_M, EVEN_N)
 
 
+@triton.jit
+def _tma_gemm(
+    x_ptr, desc_ptr, out_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    SPLITS: tl.constexpr, CHUNK: tl.constexpr,
+    BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_M: tl.constexpr,
+    EVEN_M: tl.constexpr, WIDE: tl.constexpr,
+):
+    """``_trans_gemm`` with the weight tile read through a Hopper TMA tensor map.
+
+    ``desc_ptr`` is the device copy of a 2-D descriptor of weight[N, K] tiled
+    [BLOCK_N, BLOCK_K]; the load takes the ELEMENT offsets (row, k) of a whole
+    tile and returns it in storage orientation, which is ``trans``'s first
+    operand: same ``tl.dot(weight, x^T, acc)``, same K order, so the same bits
+    as ``trans`` when the load returns the same bytes. (Transposing the loaded
+    tile into ``exact``'s ``tl.dot(x, weight)`` segfaults the Triton 3.1.0
+    compiler for cuda:90 - never do that.) Loads only: descriptor stores are
+    nondeterministic (Triton #6638). The launcher guarantees N % BLOCK_N == 0
+    and SPLITS * CHUNK == K, so no tile reaches out of bounds.
+    """
+    rows = tl.arange(0, BLOCK_M)
+    first = tl.program_id(0) * BLOCK_N
+    columns = first + tl.arange(0, BLOCK_N)
+    if WIDE:
+        columns = columns.to(tl.int64)
+    split = tl.program_id(1)
+    start = split * CHUNK
+    k = start + tl.arange(0, BLOCK_K)
+    row_ok = rows[None, :] < M
+    x_ptrs = x_ptr + k[:, None] + rows[None, :] * K
+    acc = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
+    for step in range(0, CHUNK // BLOCK_K):
+        weight = tl._experimental_descriptor_load(
+            desc_ptr, [first, start + step * BLOCK_K], [BLOCK_N, BLOCK_K], tl.bfloat16,
+        )
+        x = _load_tile(x_ptrs, row_ok, row_ok, True, EVEN_M)
+        acc = tl.dot(weight, x, acc)
+        x_ptrs += BLOCK_K
+    # acc[j, i] is output row i, column columns[j].
+    _store_tile(
+        out_ptr + split * (M * N) + columns[:, None] + rows[None, :] * N, acc,
+        row_ok, row_ok, True, EVEN_M,
+    )
+
+
 def exact_splits(k, block_k, wanted):
     """Largest split count <= wanted whose chunks tile K with whole BLOCK_K blocks."""
     if k % block_k:

@@ -5,6 +5,7 @@ FP32 reduction, never atomics. Selection is cached by tensor shape before the
 decode graph is captured; prefill's large matrix products remain native.
 """
 
+import ctypes
 import statistics
 import time
 
@@ -13,7 +14,7 @@ from torch.nn import functional as F
 import triton
 import triton.language as tl
 
-from kernels.gemm import _exact_gemm, _hoist_gemm, _trans_gemm, exact_splits
+from kernels.gemm import _exact_gemm, _hoist_gemm, _tma_gemm, _trans_gemm, exact_splits
 from kernels.merged import Split
 from kernels.tune import register
 
@@ -84,7 +85,77 @@ def _merge_projection(
     tl.store(out_ptr + offsets, tl.sum(values, axis=0), offsets < COUNT)
 
 
-def _project(x, weight, config, split_ok=False):
+# --- Hopper TMA descriptor loads (Triton 3.1.0 experimental API) -------------
+# ``tma`` is ``trans`` with the weight tile read through a tensor map. Every
+# path fails closed: without a descriptor ``_project`` launches ``trans`` with
+# the same constants (the same sums), and any exception retires the kind.
+#: Descriptor bytes; the blog's tuned value (the struct itself fits in 128).
+TMA_SIZE = 512
+_TMA_OFF = [False]
+_TMA_DESCRIPTORS = {}
+#: fill_2d_tma_descriptor returns Py_None without INCREF: never release a result.
+_TMA_RESULTS = []
+
+def _tma_retire(error):
+    if not _TMA_OFF[0]:
+        print(f"TMA descriptor loads retired: {error!r}", flush=True)
+    _TMA_OFF[0] = True
+
+
+def _tma_fill():
+    if _TMA_OFF[0] or not hasattr(tl, "_experimental_descriptor_load"):
+        return None
+    return getattr(triton.runtime.driver.active.utils, "fill_2d_tma_descriptor", None)
+
+
+def _tma_ready(weight, block_n, block_k):
+    """Whether a descriptor of this weight's shape may be built.
+
+    driver.c asserts on the encoder's result, which no ``except`` catches, so
+    only whole, aligned BF16 tilings are ever submitted. (A child-process probe
+    would cost an interpreter + torch import per workload under the sandboxed
+    host: too much for the whole-run limit.)
+    """
+    try:
+        n, k = weight.shape
+        return (
+            not _TMA_OFF[0] and weight.is_cuda and weight.dtype == torch.bfloat16 and weight.is_contiguous()
+            and n % block_n == 0 and k % block_k == 0 and 2 * block_k >= 32
+            and weight.data_ptr() % 128 == 0 and _tma_fill() is not None
+        )
+    except Exception as error:
+        _tma_retire(error)
+        return False
+
+
+def _tma_descriptor(weight, block_n, block_k):
+    """Device tensor map of ``weight`` tiled [block_n, block_k], or None. Built once, eagerly, kept alive."""
+    try:
+        n, k = weight.shape
+        key = (weight.data_ptr(), n, k, block_n, block_k)
+        desc = _TMA_DESCRIPTORS.get(key)
+        if desc is not None or _TMA_OFF[0] or torch.cuda.is_current_stream_capturing():
+            return desc
+        if not _tma_ready(weight, block_n, block_k) or weight.data_ptr() % 128:
+            return None
+        fill = _tma_fill()
+        host = torch.zeros(TMA_SIZE, dtype=torch.int8)
+        buffer = (ctypes.c_char * TMA_SIZE).from_address(host.data_ptr())
+        # (address, dim1, dim0, tile1, tile0, element bytes, host buffer): dim0 is the contiguous axis.
+        _TMA_RESULTS.append(fill(weight.data_ptr(), n, k, block_n, block_k, weight.element_size(), buffer))
+        desc = torch.empty(TMA_SIZE, dtype=torch.int8, device=weight.device)
+        if desc.data_ptr() % 64:
+            return None
+        desc.copy_(host)
+        torch.cuda.synchronize(weight.device)
+        _TMA_DESCRIPTORS[key] = desc
+        return desc
+    except Exception as error:
+        _tma_retire(error)
+        return None
+
+
+def _project(x, weight, config, split_ok=False, strict=False):
     kind, block_n, block_k, splits, warps = config
     m, k = x.shape
     n = weight.shape[0]
@@ -115,13 +186,33 @@ def _project(x, weight, config, split_ok=False):
     else:
         # kernels/gemm.py: each mask exists only where that axis is ragged.
         block_m = 16 if m <= 16 else 32
-        (_exact_gemm if kind == "exact" else _trans_gemm)[(triton.cdiv(n, block_n), splits)](
-            x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
-            EVEN_M=m == block_m, EVEN_N=n % block_n == 0, EVEN_K=splits * chunk == k,
-            WIDE=max(n * k, splits * m * n) + 2 * block_n * max(k, m) >= 2 ** 31,
-            num_warps=warps, num_stages=2,
-        )
+        wide = max(n * k, splits * m * n) + 2 * block_n * max(k, m) >= 2 ** 31
+        launched = False
+        if kind == "tma":
+            desc = _tma_descriptor(weight, block_n, block_k) if n % block_n == 0 and splits * chunk == k else None
+            if desc is None and strict:
+                raise RuntimeError("no TMA descriptor for this weight")
+            if desc is not None:
+                try:
+                    _tma_gemm[(n // block_n, splits)](
+                        x, desc, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+                        BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m, EVEN_M=m == block_m, WIDE=wide,
+                        num_warps=warps, num_stages=2,
+                    )
+                    launched = True
+                except Exception as error:
+                    _tma_retire(error)
+                    if strict:
+                        raise
+        # "tma" without a descriptor (capture before its eager pass, retired kind) is "trans": the same sums.
+        kernel = None if launched else _exact_gemm if kind == "exact" else _trans_gemm
+        if kernel is not None:
+            kernel[(triton.cdiv(n, block_n), splits)](
+                x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+                BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
+                EVEN_M=m == block_m, EVEN_N=n % block_n == 0, EVEN_K=splits * chunk == k, WIDE=wide,
+                num_warps=warps, num_stages=2,
+            )
     if splits > 1 and split_ok:
         # The consumer kernel sums and rounds the partials itself.
         return Split(partial, (m, n))
@@ -188,7 +279,11 @@ def _candidates(m, n, k):
         # Verify blocks fill most of the 16/32 input rows, so every tile reloads
         # a large x block: wider output tiles amortize it. Judged in the real
         # verify graph (DecodeState.refine), not only in isolation.
-        configs += [tiled("exact", 64, 128), tiled("trans", 64, 128), hoisted(64, 128)]
+        if not _TMA_OFF[0] and n % 64 == 0 and k % 128 == 0:
+            # "trans" with TMA weight loads; offered only while every fail-safe
+            # holds, and early: the per-shape budget drops the tail of this list.
+            configs.append(tiled("tma", 64, 128))
+        configs += [hoisted(64, 128), tiled("exact", 64, 128), tiled("trans", 64, 128)]
     return configs
 
 
@@ -197,7 +292,7 @@ def _agrees(probe, weight, config, reference):
     try:
         # Split layouts are checked through their FP32 partials: the verify
         # path never launches the merge kernel, so tuning need not compile it.
-        actual = _project(probe, weight, config, split_ok=True)
+        actual = _project(probe, weight, config, split_ok=True, strict=True)
         actual = actual.partial.sum(0) if isinstance(actual, Split) else actual.float()
         return bool(((actual - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
     except Exception as error:
@@ -230,6 +325,9 @@ def _inherit(x, weight):
 
 def _choose(x, weight, split_ok=False):
     global _TUNING_DEADLINE
+    if x.shape[0] > 4 and not _TMA_OFF[0]:
+        # The child-process probe (seconds) stays outside the tuning clock.
+        _tma_ready(weight, 64, 128)
     now = time.monotonic()
     if _TUNING_DEADLINE is None:
         _TUNING_DEADLINE = now + _PROCESS_SECONDS
@@ -302,6 +400,10 @@ def linear(x, weight, split_ok=False):
             lambda: _CHOICES[key], lambda config: _CHOICES.__setitem__(key, config),
         )
     choice = _CHOICES[key]
+    if rows > 4 and not _TMA_OFF[0] and any(config and config[0] == "tma" for _, config in _VALIDATED.get(key, ())):
+        # Every weight of a shape that validated "tma" gets its descriptor in the
+        # eager pass, so the captured step can re-judge the kind for all layers.
+        _tma_descriptor(weight, 64, 128)
     if choice is None:
         return F.linear(x, weight)
     result = _project(flat, weight, choice, split_ok)

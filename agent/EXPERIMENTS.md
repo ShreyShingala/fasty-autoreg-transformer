@@ -1222,3 +1222,21 @@ capacity x kv_heads x dim against a projection's n x k) instead of always
 first - the audit estimated refine never reached a projection knob.
 Read-outs: run duration (expect well below c57's 815 s), TTFT (must not rise),
 TPOT on all three public cases.
+
+## Candidate 67 - "tma": transposed GEMM tiles with Hopper TMA descriptor weight loads (held; own run)
+
+Lead from the GEMM web research (PyTorch "Hopper TMA unit" blog: a Triton
+GEMM's memory throughput 0.91 -> 1.45 TB/s from TMA loads). Built by a
+subagent against the Triton 3.1.0 sources: `tl._experimental_descriptor_load`
+for the WEIGHT tile only (no TMA stores), one 512-byte descriptor per weight
+built eagerly by the driver's `fill_2d_tma_descriptor`, kernel = `_trans_gemm`
+otherwise (bit-identical to `trans` if the loads return the same bytes).
+Offline: all 15 shape x row combinations compile for cuda:90 and the TTGIR
+shows `async_tma_copy_global_to_local`. Fail-closed at every catchable point
+(missing API, alignment, exception, disagreement with F.linear, not faster ->
+not chosen; no descriptor -> `trans`). NOT catchable: driver.c asserts on a
+rejected encoding (process abort) - only whole, 128-byte-aligned BF16 tilings
+are submitted; the subagent's child-process probe was removed (an interpreter
++ torch import per workload under gVisor costs more than the run cap allows).
+Goes out alone after c66 so a crash cannot take other changes with it. Also in
+this commit: refine tries only the three fastest layouts per projection.
