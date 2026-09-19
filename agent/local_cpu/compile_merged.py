@@ -2,7 +2,7 @@ from offline_compile import compile_kernel
 from kernels.rmsnorm import _add_rms_norm_kernel
 from kernels.swiglu import _swiglu
 from kernels.qk_rope import _qk_rope_cache
-for splits, dtype in ((1, "*bf16"), (8, "*fp32"), (2, "*fp32")):
+for splits, dtype in ((1, "*bf16"), (8, "*fp32"), (2, "*fp32"), (5, "*fp32"), (4, "*fp32")):
     count = 16 * 2560 if splits > 1 else 1
     compile_kernel(_add_rms_norm_kernel, {"x_ptr": dtype, "residual_ptr": "*bf16", "w_ptr": "*bf16", "out_ptr": "*bf16", "sum_ptr": "*bf16"}, {"WIDTH": 2560, "EPS": 1e-6, "BLOCK": 4096, "COUNT": count, "SPLITS": splits}, num_warps=4)
     compile_kernel(_swiglu, {"packed": dtype, "output": "*bf16"}, {"WIDTH": 9728, "BLOCK": 1024, "COUNT": 16 * 19456 if splits > 1 else 1, "SPLITS": splits}, num_warps=4)

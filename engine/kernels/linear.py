@@ -13,6 +13,7 @@ from torch.nn import functional as F
 import triton
 import triton.language as tl
 
+from kernels.gemm import _exact_gemm, _trans_gemm, exact_splits
 from kernels.merged import Split
 from kernels.tune import register
 
@@ -95,10 +96,20 @@ def _project(x, weight, config, split_ok=False):
             x, weight, partial, N=n, K=k, SPLITS=splits, CHUNK=chunk,
             BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps,
         )
-    else:
+    elif kind == "gemm":
         _skinny_gemm[(triton.cdiv(n, block_n), splits)](
             x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
             BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=16 if m <= 16 else 32,
+            num_warps=warps, num_stages=2,
+        )
+    else:
+        # kernels/gemm.py: each mask exists only where that axis is ragged.
+        block_m = 16 if m <= 16 else 32
+        (_exact_gemm if kind == "exact" else _trans_gemm)[(triton.cdiv(n, block_n), splits)](
+            x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+            BLOCK_N=block_n, BLOCK_K=block_k, BLOCK_M=block_m,
+            EVEN_M=m == block_m, EVEN_N=n % block_n == 0, EVEN_K=splits * chunk == k,
+            WIDE=max(n * k, splits * m * n) + 2 * block_n * max(k, m) >= 2 ** 31,
             num_warps=warps, num_stages=2,
         )
     if splits > 1 and split_ok:
@@ -151,6 +162,11 @@ def _candidates(m, n, k):
         splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
         return ("gemm", block_n, block_k, splits, 4)
 
+    def tiled(kind, block_n, block_k):
+        # Whole-block splits: K=2560 takes 5 where the power of two left one
+        # of 8 split programs entirely masked; K=9728 takes 4.
+        return (kind, block_n, block_k, exact_splits(k, block_k, gemm(block_n, block_k)[3]), 4)
+
     configs = [gemm(64, 128)]
     if m == 1:
         configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4)]
@@ -158,7 +174,7 @@ def _candidates(m, n, k):
         # Verify blocks fill most of the 16/32 input rows, so every tile reloads
         # a large x block: wider output tiles amortize it. Judged in the real
         # verify graph (DecodeState.refine), not only in isolation.
-        configs += [gemm(128, 128), gemm(256, 128)]
+        configs += [tiled("exact", 64, 128), tiled("trans", 64, 128), gemm(256, 128)]
     return configs
 
 
