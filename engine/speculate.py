@@ -89,6 +89,7 @@ def successor_table(model, chunk=2048, top=8, prefix=198):
             ids = torch.arange(begin, min(begin + chunk, vocabulary), device=device)[:, None]
             bare = model(input_ids=ids, use_cache=False).logits[:, -1, :].float().log_softmax(-1)
             after = torch.cat((torch.full_like(ids, prefix), ids), dim=1)
-            bare += model(input_ids=after, use_cache=False).logits[:, -1, :].float().log_softmax(-1)
+            # Only the last position's logits are wanted: skip the other row of lm_head.
+            bare += model(input_ids=after, use_cache=False, logits_to_keep=1).logits[:, -1, :].float().log_softmax(-1)
             table[begin:begin + ids.shape[0]] = bare.topk(top, dim=-1).indices
     return table.contiguous()
