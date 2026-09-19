@@ -19,8 +19,9 @@ def propose(history, position, count, index, successor):
     and zero beyond. ``index`` is ``arange(C)``. ``successor`` is int64 [V]: the
     model's own greedy token after each single token, a prompt-independent
     table. Drafts copy the row's text after the latest earlier occurrence of
-    its suffix (at least two tokens) while that text is known, and otherwise
-    follow the table from the previous draft.
+    its longest suffix (three, two or one token; measured offline, one-token
+    matches beat the table) while that text is known, and otherwise follow the
+    table from the previous draft.
     """
     size = history.shape[1]
     place = position[:, None]
@@ -28,10 +29,11 @@ def propose(history, position, count, index, successor):
     before = history.gather(1, (place - 1).clamp_min(0))
     earlier = history.gather(1, (place - 2).clamp_min(0))
     column = index[None, :]
-    two = (history == last) & (column < place) & (torch.roll(history, 1, dims=1) == before) & (column >= 1) & (place >= 1)
+    one = (history == last) & (column < place)
+    two = one & (torch.roll(history, 1, dims=1) == before) & (column >= 1) & (place >= 1)
     three = two & (torch.roll(history, 2, dims=1) == earlier) & (column >= 2) & (place >= 2)
     # Longer suffix first, then the most recent occurrence.
-    rank = torch.where(three, column + size, torch.where(two, column, column - 2 * size))
+    rank = torch.where(three, column + 2 * size, torch.where(two, column + size, torch.where(one, column, column - size)))
     best = rank.max(dim=1, keepdim=True).values
     found = best >= 0
     start = torch.where(found, best % size, place)

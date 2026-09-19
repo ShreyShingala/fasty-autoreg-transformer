@@ -568,6 +568,30 @@ Public cases move within prompt-draw noise; the hidden aggregate rose 1.8%.
 cuBLAS. Expected about -10% passes for the slowest of 16 rows against an
 unknown extra pass cost; public-2 TPOT (4.56-4.65 ms plain) decides.
 
+Result (candidate 24): commit `ebc2876`, run
+`c0468274-91ee-4211-a7fb-3b1d6742aedd` succeeded, ranked **999.788** (noise
+versus 1002.6). public-2 3037.0 tokens/s, TPOT 4.458 ms (plain 4.56-4.65): one
+draft per row at batch 16 is mildly positive through cuBLAS at 32 rows. Kept.
+
+## Local draft lab (not submitted)
+
+The pinned checkpoint now runs on this Mac (MPS, `~/.cache/fasty-lab`): greedy
+128-token continuations of 48 random 512-token windows (wikitext prose, Python
+source) and the model's top-8 single-token successors. Acceptance depends only
+on those token sequences, so draft policies are scored offline as verify
+passes per output token (lower is better; wiki, 128 outputs):
+chain-4 with >=2-token matches 0.644 (the c21-c24 policy); allowing 1-token
+matches 0.621; chain-8 0.596; chain-4 plus 3 sibling candidates (other history
+continuations, then table top-k) 0.549; chain-8 plus 7 siblings 0.500. The
+table alone is weak (top-1 hits 15% of prose tokens, 6% of code); history is
+the main source (33-39%). The platform corpus is harder than these proxies
+(public-0 runs near 0.87), so treat ratios, not absolutes, as transferable.
+
+## Candidate 25 — one-token suffix matches
+
+`propose` (reference and fused kernel) ranks earlier occurrences of the
+3/2/1-token suffix; the table is used only when the newest token never occurred.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of

@@ -12,9 +12,10 @@ def emu_propose(history, position, successor, count):
         best = -1
         for index in range(SIZE):
             back1 = h[index - 1] if index >= 1 else -1; back2 = h[index - 2] if index >= 2 else -1
-            two = index < place and h[index] == last and index >= 1 and back1 == before and place >= 1
+            one = index < place and h[index] == last
+            two = one and index >= 1 and back1 == before and place >= 1
             three = two and index >= 2 and back2 == earlier and place >= 2
-            rank = index + SIZE if three else index if two else -1
+            rank = index + 2 * SIZE if three else index + SIZE if two else index if one else -1
             best = max(best, rank)
         found = best >= 0; start = best % SIZE if found else place
         out[row, 0] = last; previous = last

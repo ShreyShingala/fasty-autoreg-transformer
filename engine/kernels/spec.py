@@ -27,11 +27,12 @@ def _propose(
     here = tl.load(base + index, inside, other=-1)
     back1 = tl.load(base + index - 1, inside & (index >= 1), other=-1)
     back2 = tl.load(base + index - 2, inside & (index >= 2), other=-1)
-    # A suffix of at least two tokens ending before the position.
-    two = inside & (index < place) & (here == last) & (index >= 1) & (back1 == before) & (place >= 1)
+    # An earlier occurrence of the current suffix, ending before the position.
+    one = inside & (index < place) & (here == last)
+    two = one & (index >= 1) & (back1 == before) & (place >= 1)
     three = two & (index >= 2) & (back2 == earlier) & (place >= 2)
     # Longer suffix first, then the most recent occurrence.
-    rank = tl.where(three, index + SIZE, tl.where(two, index, -1))
+    rank = tl.where(three, index + 2 * SIZE, tl.where(two, index + SIZE, tl.where(one, index, -1)))
     best = tl.max(rank, axis=0)
     found = best >= 0
     start = tl.where(found, best % SIZE, place)
