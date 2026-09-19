@@ -20,22 +20,25 @@ from kernels import spec
 def block_shape(batch):
     """(chain tokens incl. the trusted one, alternatives to draft 1) per row, from the batch size alone.
 
-    A block of up to 32 rows runs through the measured skinny GEMM and still
-    reads each weight once, so it costs about one ordinary step. Offline replays
-    of the model's greedy text: at 8 rows per sequence a chain of 4 drafts plus
-    3 alternatives beats 7 drafts; at 4 rows, 2 drafts plus 1 alternative beat
-    3 drafts. At batch one samples sit on the release pace, which scales with
-    the pass time, so its block stays small (candidate 26 lost 2.7% with long
-    chains). (1, 0) means no speculation.
+    Official runs: a pass of up to 16 rows costs about one ordinary step (4.2 ms
+    at batch one even with 16 tokens), but at batch 4 a 32-row pass cost 17%
+    more than a 16-row one and lost to it (TPOT 4.21 vs 3.98 ms), so blocks
+    stay within 16 rows wherever that leaves at least one draft; batches 9-16
+    take one draft at 18-32 rows, which still paid (candidate 24). Offline
+    replays: at 8 tokens per row 4 drafts + 3 alternatives beat 7 drafts, at 16
+    8 + 7 is best, at 3-4 one alternative beats one more chain token.
+    (1, 0) means no speculation.
     """
-    if batch <= 2:
-        # Candidate 27: a 16-token block at batch one costs about 4.2 ms, like
-        # a 5-token one; offline it needs 7.5% fewer passes than 5 + 3.
+    if batch == 1:
         return 9, 7
-    if batch <= 4:
+    if batch == 2:
         return 5, 3
-    if batch <= 8:
+    if batch == 3:
+        return 4, 1
+    if batch == 4:
         return 3, 1
+    if batch == 5:
+        return 2, 1
     if batch <= 16:
         return 2, 0
     return 1, 0

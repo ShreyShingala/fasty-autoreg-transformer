@@ -654,6 +654,15 @@ prompt position instead of the literal next token is a wash (prose -1..-3%
 passes, code +2..+6%); as an extra alternative it gives -1.5..-6% but needs the
 LM head on every prompt token. Not pursued.
 
+Result (candidate 28): commit `de99361`, run
+`0ad27f6c-40be-4006-82c9-2a3bac924c7a` succeeded, ranked **1061.375** (new best).
+public-0 285.0 (5+3 at batch one; TPOT 3.277), public-1 515.5 (TPOT 4.208 with
+8 tokens per row = 32 rows, versus 3.976 with 4 tokens = 16 rows in candidate
+27), public-2 3157.1 (TPOT 4.264). Learned: a 32-row pass at batch 4 costs
+about 17% more than a 16-row pass, more than its extra drafts return; keep
+blocks within 16 rows where possible. The aggregate still rose, so the 32-row
+GEMM helps the workloads that have no smaller option.
+
 ## Candidate 29 — adaptive release pacing
 
 The score is the median sample and the spread gate compares fastest with
@@ -666,6 +675,21 @@ static floor binding the median.
 ## Candidate 30 — full 9 + 7 tree for batches 1-2
 
 On top of candidates 28-29. Batch 2 becomes a 32-row block (skinny GEMM).
+
+Lab note: token recycling (keeping the model's in-context top-8 after each
+token seen during the current generation, seeded with the static table) saves
+at most 1-2% of passes within 32-128 output tokens. Not pursued.
+
+## Candidate 31 — cuBLASLt for dense products (trial)
+
+`torch.backends.cuda.preferred_blas_library("cublaslt")` at load. Prefill is
+about half of the long-prompt workloads and sits on cuBLAS; read TTFT.
+
+## Candidate 32 — blocks within 16 rows
+
+batch 1 -> 9+7, 2 -> 5+3, 3 -> 4+1, 4 -> 3+1, 5 -> 2+1, 6-16 -> 2+0. Supersedes the
+shapes of candidates 28 and 30 (which are still queued and will show what
+32-row blocks cost at batch 2).
 
 ## Where the remaining time is (analysis, 2026-09-19)
 
