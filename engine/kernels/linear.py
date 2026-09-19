@@ -178,13 +178,40 @@ def _candidates(m, n, k):
     return configs
 
 
+def _agrees(actual, reference):
+    return bool(((actual.float() - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001).all())
+
+
+def _inherit(x, weight):
+    """Past the budget, a verify block takes the layout measured for this weight at another row count.
+
+    The second block size tried at warmup would otherwise run cuBLAS-only and
+    lose the comparison for that reason alone. The verify-graph refinement
+    still re-judges the layout against cuBLAS if this block size wins.
+    """
+    m, k = x.shape
+    n = weight.shape[0]
+    if m <= 4:
+        return None
+    for (device, rows, width, inner), config in list(_CHOICES.items()):
+        if config is None or device != x.device or rows <= 4 or (width, inner) != (n, k):
+            continue
+        generator = torch.Generator(device=x.device).manual_seed(1729)
+        probe = torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
+        if not _agrees(_project(probe, weight, config), F.linear(probe, weight)):
+            continue
+        _VALIDATED[(x.device, m, n, k)] = [(0.0, config), (1.0, None)]
+        return config
+    return None
+
+
 def _choose(x, weight):
     global _TUNING_DEADLINE
     now = time.monotonic()
     if _TUNING_DEADLINE is None:
         _TUNING_DEADLINE = now + _PROCESS_SECONDS
     if now >= _TUNING_DEADLINE:
-        return None
+        return _inherit(x, weight)
     # Every workload is a fresh process: bound each shape and the process so
     # compilation fits the load/warmup and whole-run budgets, and so one slow
     # shape cannot leave the later projections unmeasured.
@@ -207,8 +234,7 @@ def _choose(x, weight):
         actual = _project(probe, weight, config)
         # Reject a kernel that fails an operator sanity check. Full-model
         # correctness still comes from the platform's own-prefix replay.
-        close = (actual.float() - reference.float()).abs() <= reference.float().abs() * 0.016 + 0.001
-        if not bool(close.all()):
+        if not _agrees(actual, reference):
             continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config), flush)
         validated.append((elapsed, config))
