@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 
 from attention import grouped_sdpa
+from kernels.qk_rope import qk_rope_cache
 from kernels.swiglu import swiglu
 
 
@@ -32,17 +33,25 @@ class PackedAttention(torch.nn.Module):
         input_shape = hidden_states.shape[:-1]
         head_shape = (*input_shape, -1, self.head_dim)
         packed = F.linear(hidden_states, self.qkv_weight)
-        q, k, v = packed.split((self.q_width, self.kv_width, self.kv_width), dim=-1)
-        query = self.q_norm(q.reshape(head_shape)).transpose(1, 2)
-        key = self.k_norm(k.reshape(head_shape)).transpose(1, 2)
-        value = v.reshape(head_shape).transpose(1, 2)
         cos, sin = position_embeddings
-        query, key = apply_rotary_pos_emb(query, key, cos, sin)
-        if past_key_value is not None:
-            key, value = past_key_value.update(
-                key, value, self.layer_idx,
-                {"cos": cos, "sin": sin, "cache_position": cache_position},
+        if hidden_states.shape[1] == 1 and past_key_value is not None and not past_key_value.prefilling:
+            key = past_key_value.keys[self.layer_idx]
+            value = past_key_value.values[self.layer_idx]
+            query = qk_rope_cache(
+                packed, self.q_norm, self.k_norm, cos, sin, cache_position,
+                key, value, self.q_width // self.head_dim,
             )
+        else:
+            q, k, v = packed.split((self.q_width, self.kv_width, self.kv_width), dim=-1)
+            query = self.q_norm(q.reshape(head_shape)).transpose(1, 2)
+            key = self.k_norm(k.reshape(head_shape)).transpose(1, 2)
+            value = v.reshape(head_shape).transpose(1, 2)
+            query, key = apply_rotary_pos_emb(query, key, cos, sin)
+            if past_key_value is not None:
+                key, value = past_key_value.update(
+                    key, value, self.layer_idx,
+                    {"cos": cos, "sin": sin, "cache_position": cache_position},
+                )
         attention, _ = grouped_sdpa(
             self, query, key, value, attention_mask, scaling=self.scaling, dropout=0.0
         )

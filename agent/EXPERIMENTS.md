@@ -89,6 +89,28 @@ output dimensions may select a different cuBLAS reduction algorithm; fused SiLU
 must retain its intermediate cast. The next official run must establish whether
 the overall score improves. Candidate 1 is the known passing fallback.
 
+Result: commit `a339a7f` passed official run
+`b4e2dd03-7f39-43a4-a73f-f172128e55fb`, ranked **541.648 tokens/s**, up **2.47%**.
+Peak GPU memory was 15.125 GiB. Public TPOT improved from 7.203/9.767/7.798 ms
+to 6.741/9.558/7.558 ms. Public TTFT increased to 24.987/166.157/155.906 ms,
+while still passing paired native latency gates. Native timings also changed
+substantially between runs, so this is a measured score improvement rather than
+a controlled attribution of every timing difference to packing alone.
+
+## Candidate 3 — fuse decode Q/K normalization, RoPE and cache writes
+
+Starting from candidate 2, fuse only the single-token decode path. One Triton
+program per batch row and Q/K head computes the per-head norm and RoPE. Q heads
+write the contiguous query buffer; K heads write the current K cache slot and
+copy the corresponding V into its cache slot. Preserve FP32 norm accumulation,
+BF16 normalization/gain boundaries, and separate BF16 rounding of both RoPE
+products before their sum. Prefill remains the candidate-2 implementation.
+
+Hypothesis: replace the two head-norm kernels, separate rotary operations and
+two cache index-copy kernels with one launch per layer, improving TPOT without
+changing prefill. Risks: head/stride/cache indexing and compiler cast behavior.
+Candidate 2 is the known passing fallback.
+
 Pinned implementation references:
 
 - [Qwen3 4.51.3](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/qwen3/modeling_qwen3.py)

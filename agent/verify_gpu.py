@@ -22,7 +22,7 @@ def main():
     import transformers
     import triton
     from transformers import AutoModelForCausalLM, Qwen3Config, Qwen3ForCausalLM
-    from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, apply_rotary_pos_emb
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required; CPU protocol tests cannot validate GPU numerics")
@@ -38,6 +38,7 @@ def main():
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from kernels.rmsnorm import rms_norm
     from kernels.swiglu import swiglu
+    from kernels.qk_rope import qk_rope_cache
 
     with torch.inference_mode():
         # Exercise real Qwen widths, BF16 cast placement and non-contiguous input.
@@ -75,6 +76,38 @@ def main():
             assert (actual == expected).float().mean().item() >= 0.999
             torch.testing.assert_close(actual, expected, atol=0.015625, rtol=0.008)
         print("SwiGLU BF16 cast parity: passed", flush=True)
+
+        for batch, q_heads, kv_heads, dim in ((1, 32, 8, 128), (4, 32, 8, 128), (2, 8, 2, 64)):
+            packed = torch.randn(batch, 1, (q_heads + 2 * kv_heads) * dim, device="cuda", dtype=torch.bfloat16)
+            q_norm = Qwen3RMSNorm(dim, eps=1e-6).to(device="cuda", dtype=torch.bfloat16)
+            k_norm = Qwen3RMSNorm(dim, eps=1e-3).to(device="cuda", dtype=torch.bfloat16)
+            q_norm.weight.copy_(torch.randn_like(q_norm.weight))
+            k_norm.weight.copy_(torch.randn_like(k_norm.weight))
+            q, k, v = packed.split((q_heads * dim, kv_heads * dim, kv_heads * dim), dim=-1)
+            phase = torch.randn(1, 1, dim // 2, device="cuda")
+            phase = torch.cat((phase, phase), dim=-1)
+            cos, sin = phase.cos().bfloat16(), phase.sin().bfloat16()
+            norm_q = q_norm(q.reshape(batch, 1, q_heads, dim)).transpose(1, 2)
+            norm_k = k_norm(k.reshape(batch, 1, kv_heads, dim)).transpose(1, 2)
+            expected_q, expected_k = apply_rotary_pos_emb(norm_q, norm_k, cos, sin)
+            rotated_q = torch.cat((-norm_q[..., dim // 2:], norm_q[..., :dim // 2]), dim=-1)
+            wrong_rope = (
+                norm_q.float() * cos.unsqueeze(1).float()
+                + rotated_q.float() * sin.unsqueeze(1).float()
+            ).bfloat16()
+            assert (wrong_rope != expected_q).float().mean().item() > 0.01
+            keys = torch.full((batch, kv_heads, 9, dim), 17, device="cuda", dtype=torch.bfloat16)
+            values = torch.full_like(keys, -13)
+            position = torch.tensor([3], device="cuda", dtype=torch.int64)
+            actual_q = qk_rope_cache(packed, q_norm, k_norm, cos, sin, position, keys, values, q_heads)
+            for actual, expected in ((actual_q, expected_q), (keys[:, :, 3:4, :], expected_k)):
+                assert (actual == expected).float().mean().item() >= 0.998
+                torch.testing.assert_close(actual, expected, atol=0.03125, rtol=0.008)
+            assert torch.equal(values[:, :, 3:4, :], v.reshape(batch, 1, kv_heads, dim).transpose(1, 2))
+            for tensor, sentinel in ((keys, 17), (values, -13)):
+                assert torch.all(tensor[:, :, :3, :] == sentinel)
+                assert torch.all(tensor[:, :, 4:, :] == sentinel)
+        print("Fused Q/K norm + RoPE + cache-write parity and untouched slots: passed", flush=True)
 
         module = SimpleNamespace(num_key_value_groups=4)
         for batch, capacity, valid in ((1, 33, 1), (2, 65, 23), (4, 32, 32)):
