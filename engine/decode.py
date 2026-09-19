@@ -39,11 +39,17 @@ EXPECTED_PASSES = {
 
 
 def block_candidates(batch):
-    """Block sizes worth measuring for this batch: the largest within 16 rows and within 32 rows."""
+    """Block sizes worth measuring for this batch.
+
+    The largest within 16 and within 32 rows; for batches 9-16 within 32 and
+    within 64 rows (public-2 ran 2% faster with four tokens per row through 64
+    cuBLAS rows than with two, while the hidden aggregate fell when that was
+    forced for every short prompt: so it is measured per workload instead).
+    """
     if batch > 16:
         return []
     sizes = []
-    for rows in (16, 32):
+    for rows in ((16, 32) if batch <= 8 else (32, 64)):
         fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
         if max(fitting) not in sizes:
             sizes.append(max(fitting))

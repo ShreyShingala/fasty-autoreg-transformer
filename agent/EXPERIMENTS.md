@@ -909,6 +909,11 @@ general trees give at most 0.23%. Estimated remaining headroom in this family:
 about 1% more. Not implemented (kernel complexity versus a gain near the
 platform's noise floor).
 
+## Candidate 48 — batches 9-16 also measure a 64-row block
+
+`block_candidates` offers (32, 64)-row blocks for batches 9-16; the warmup
+measurement of candidate 47 decides per workload.
+
 ## Where the remaining time is (analysis, 2026-09-19)
 
 With the consumer gap removed, batch-one TPOT 3.94 ms is about 3.2 ms of
