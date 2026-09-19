@@ -1323,3 +1323,11 @@ back to the c57 level. No crash: the TMA path either works on the H100 or was
 rejected by its fail-safes (stdout is hidden; the TPOT drop at batch 4/16
 suggests a real GEMM gain, but the same run also changed which layouts refine
 can reach). Keep. 290 s of run-time headroom is now available for tuning.
+
+## Candidate 72 - spend the recovered run time on in-graph refinement (held)
+
+Candidate 67 runs in 612 s of the 900 s cap. Refine budget 8 -> 24 s (split
+across block sizes), projection tuning budget 24 -> 30 s: about +22 s per
+workload, ~745 s per run. Refinement is the only place layouts are judged in
+the real captured pass; the audit estimated it used to reach two or three
+options per block size.
