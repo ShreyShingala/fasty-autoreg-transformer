@@ -630,6 +630,19 @@ with a toy model and a slot-level cache model equals sequential greedy in 300
 cases (757 alternative branches); the tree mask formulas match a reference;
 all kernels compile for `cuda:90`. Two independent reviews requested.
 
+Result (candidate 27): commit `80ab1ef`, run
+`5c736753-7725-4afd-b352-c47df32d5fdd` succeeded, ranked **1051.306** (new best,
+#1). public-0 296.1 tokens/s (TPOT 3.158; totals p10/p50/p90 108.0/108.1/118.2,
+i.e. the median is on the static 0.75 pace floor), public-1 532.7 (TPOT 3.976,
+from about 4.5), public-2 3132.6. Tree mask, relocation and the stacked KV store
+are H100-correct. Independent Claude review: no defects.
+
+Lab correction: a simulator written for second-level alternatives had a bug
+(zero requested alternatives returned all candidates); fixed, the earlier
+ranking stands: at 8 rows per sequence 4 drafts + 3 alternatives need 7-10%
+fewer passes than 7 drafts; at 16 rows 8 + 7 is best; second-level
+alternatives add nothing.
+
 ## Candidate 28 — skinny GEMM up to 32 rows; 8-token tree blocks through batch 4
 
 `_skinny_gemm` takes `BLOCK_M` 16 or 32 and `linear` measures it against
