@@ -146,7 +146,7 @@ def _graph_time(fn):
 
 
 _CONFIGS = {}
-_TUNING_SECONDS = 15.0
+_TUNING_SECONDS = 10.0
 
 
 def _choose(query, key, value, position, scale):
@@ -165,7 +165,7 @@ def _choose(query, key, value, position, scale):
         (64, min(32, splits * 2), 4), (128, splits, 4), (128, max(1, splits // 4), 4),
     ]
     candidates = []
-    for config in wanted:
+    for config in wanted[:3]:
         config = (config[0], max(1, min(config[1], triton.cdiv(capacity, config[0]))), config[2])
         if config != default and config not in candidates:
             candidates.append(config)

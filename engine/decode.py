@@ -9,7 +9,6 @@ import time
 
 import torch
 
-from kernels import packed as packing
 from kernels.rmsnorm import add_rms_norm, rms_norm
 from kernels.decode_attention import decode_attention
 from kernels.linear import linear
@@ -39,25 +38,6 @@ def optimize_model(model):
         layer.self_attn.k_norm = FusedRMSNorm(layer.self_attn.k_norm)
         layer.self_attn = PackedAttention(layer.self_attn)
         layer.mlp = PackedMLP(layer.mlp)
-    # Lossless 12-bit copies of the decode projections, grouped by shape so a
-    # shape shares one kernel. Prefill keeps reading the BF16 originals.
-    groups = {}
-    for layer in base.layers:
-        for weight in (
-            layer.self_attn.qkv_weight, layer.self_attn.o_proj.weight,
-            layer.mlp.gate_up_weight, layer.mlp.down_proj.weight,
-        ):
-            groups.setdefault(tuple(weight.shape), []).append(weight)
-    groups.setdefault(tuple(model.lm_head.weight.shape), []).append(model.lm_head.weight)
-    try:
-        with torch.no_grad():
-            packed = sum(packing.register(weights) for weights in groups.values())
-    except Exception as error:  # packing is optional; BF16 remains complete
-        packing.clear()
-        packed = 0
-        print(f"lossless packing skipped: {error!r}", flush=True)
-    torch.cuda.empty_cache()
-    print(f"lossless packed projections: {packed} of {sum(map(len, groups.values()))}", flush=True)
 
 
 class KVCache:
@@ -263,7 +243,7 @@ class DecodeState:
         self.position.fill_(self.shape[1])
         return sorted(times)[len(times) // 2]
 
-    def refine(self, seconds=60.0):
+    def refine(self, seconds=20.0):
         """Keep a layout or launch width only if the real decode step gets faster.
 
         Isolated kernel timings pick the starting layouts, but official runs
