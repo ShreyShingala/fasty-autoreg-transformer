@@ -17,10 +17,27 @@ from kernels import packed as packing
 
 
 @triton.jit
+def _load_bf16_words(weight_ptr, rows, live, start, K: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    """The same BF16 storage read as little-endian int64: four weights a load.
+
+    Only the number of memory requests changes; every value is the stored
+    BF16 bit pattern. Rows hold K weights with K divisible by four.
+    """
+    quad = start // 4 + tl.arange(0, BLOCK_K // 4)
+    words = tl.load(
+        weight_ptr + rows[:, None] * (K // 4) + quad[None, :],
+        live[:, None] & (quad[None, :] < K // 4), other=0,
+    )
+    halves = (words[:, :, None] >> (tl.arange(0, 4) * 16)[None, None, :]) & 0xFFFF
+    return tl.reshape(halves, (BLOCK_N, BLOCK_K)).to(tl.uint16).to(tl.bfloat16, bitcast=True)
+
+
+@triton.jit
 def _gemv(
     x_ptr, weight_ptr, out_ptr,
     N: tl.constexpr, K: tl.constexpr, SPLITS: tl.constexpr,
     CHUNK: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    WORDS: tl.constexpr = False,
 ):
     rows = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     split = tl.program_id(1)
@@ -29,10 +46,13 @@ def _gemv(
     for start in range(split * CHUNK, (split + 1) * CHUNK, BLOCK_K):
         k = start + columns
         x = tl.load(x_ptr + k, k < K, other=0).to(tl.float32)
-        weight = tl.load(
-            weight_ptr + rows[:, None] * K + k[None, :],
-            (rows[:, None] < N) & (k[None, :] < K), other=0,
-        ).to(tl.float32)
+        if WORDS:
+            weight = _load_bf16_words(weight_ptr, rows, rows < N, start, K, BLOCK_N, BLOCK_K).to(tl.float32)
+        else:
+            weight = tl.load(
+                weight_ptr + rows[:, None] * K + k[None, :],
+                (rows[:, None] < N) & (k[None, :] < K), other=0,
+            ).to(tl.float32)
         acc += weight * x[None, :]
     result = tl.sum(acc, axis=1)
     tl.store(out_ptr + split * N + rows, result, rows < N)
@@ -44,6 +64,7 @@ def _skinny_gemm(
     M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    WORDS: tl.constexpr = False,
 ):
     rows = tl.arange(0, 16)
     columns = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -56,10 +77,13 @@ def _skinny_gemm(
             x_ptr + rows[:, None] * K + k[None, :],
             (rows[:, None] < M) & (k[None, :] < K), other=0,
         )
-        weight = tl.load(
-            weight_ptr + columns[None, :] * K + k[:, None],
-            (columns[None, :] < N) & (k[:, None] < K), other=0,
-        )
+        if WORDS:
+            weight = tl.trans(_load_bf16_words(weight_ptr, columns, columns < N, start, K, BLOCK_N, BLOCK_K))
+        else:
+            weight = tl.load(
+                weight_ptr + columns[None, :] * K + k[:, None],
+                (columns[None, :] < N) & (k[:, None] < K), other=0,
+            )
         acc = tl.dot(x, weight, acc)
     tl.store(
         out_ptr + split * M * N + rows[:, None] * N + columns[None, :], acc,
@@ -97,15 +121,17 @@ def _project(x, weight, config):
     out = torch.empty((m, n), device=x.device, dtype=x.dtype)
     partial = out if splits == 1 else torch.empty((splits, m, n), device=x.device, dtype=torch.float32)
     chunk = triton.cdiv(k, splits * block_k) * block_k
-    if kind == "gemv":
+    words = kind in ("wgemv", "wgemm")
+    source = weight.detach().view(torch.int64) if words else weight
+    if kind in ("gemv", "wgemv"):
         _gemv[(triton.cdiv(n, block_n), splits)](
-            x, weight, partial, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps,
+            x, source, partial, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+            BLOCK_N=block_n, BLOCK_K=block_k, WORDS=words, num_warps=warps,
         )
     else:
         _skinny_gemm[(triton.cdiv(n, block_n), splits)](
-            x, weight, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
-            BLOCK_N=block_n, BLOCK_K=block_k, num_warps=warps, num_stages=2,
+            x, source, partial, M=m, N=n, K=k, SPLITS=splits, CHUNK=chunk,
+            BLOCK_N=block_n, BLOCK_K=block_k, WORDS=words, num_warps=warps, num_stages=2,
         )
     if splits > 1:
         _merge_projection[(triton.cdiv(m * n, 512),)](
@@ -138,41 +164,60 @@ def _cold_graph_time(fn, flush):
     return statistics.median(times)
 
 
+def _exact_columns(weight, config, rows):
+    """One-hot inputs must return the BF16 columns themselves (zeros by value)."""
+    k = weight.shape[1]
+    columns = [0, 1, 2, 3, k // 2 - 1, k // 2, k - 3, k - 2, k - 1]
+    for begin in range(0, len(columns), rows):
+        chosen = columns[begin:begin + rows]
+        chosen += [chosen[-1]] * (rows - len(chosen))
+        x = torch.zeros((rows, k), device=weight.device, dtype=weight.dtype)
+        x[torch.arange(rows), chosen] = 1.0
+        actual = _project(x, weight, config)
+        expected = weight[:, chosen].t().contiguous()
+        differs = (actual.view(torch.int16) != expected.view(torch.int16)) & ~((actual == 0) & (expected == 0))
+        if bool(differs.any()):
+            return False
+    return True
+
+
 _CHOICES = {}
 _PACKED_KINDS = ("pgemv", "pwgemv", "pgemm", "pwgemm")
 _TUNING_DEADLINE = None
-_PROCESS_SECONDS = 100.0
-_SHAPE_SECONDS = 20.0
+_PROCESS_SECONDS = 110.0
+_SHAPE_SECONDS = 24.0
 
 
 def _candidates(m, n, k, packed):
-    """Layouts in order of prior plausibility; the deadline truncates the tail."""
-    def gemm(block_n, block_k):
+    """Layouts in order of prior plausibility; the deadline truncates the tail.
+
+    Official runs so far: extra plain tiles never beat (8,512)/(64,128), and a
+    long list cost the LM head its packed winner, so keep this list short.
+    """
+    def gemm(kind, block_n, block_k):
         splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
-        return ("gemm", block_n, block_k, splits, 4)
+        return (kind, block_n, block_k, splits, 4)
 
     configs = []
-    if packed:
-        # Lossless 12-bit planes first: they carry 25% less memory traffic.
-        if m == 1:
-            configs += [("pgemv", 8, 512, 1, 4)]
-            if k % 8 == 0:
-                configs += [("pwgemv", 8, 512, 1, 4), ("pwgemv", 16, 256, 1, 4), ("pwgemv", 8, 512, 1, 8)]
-            configs += [("pgemv", 16, 256, 1, 4)]
-        else:
-            configs += [("pgemm",) + gemm(64, 128)[1:]]
-            if k % 8 == 0:
-                configs += [("pwgemm",) + gemm(64, 128)[1:], ("pwgemm",) + gemm(128, 128)[1:]]
-            configs += [("pgemm",) + gemm(128, 128)[1:]]
-    configs.append(gemm(64, 128))
     if m == 1:
-        configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4), ("gemv", 4, 1024, 1, 4)]
-        if k >= 8192:
-            # A long reduction is serial inside one program; split it.
-            configs.append(("gemv", 8, 512, 4, 4))
-        configs.append(("gemv", 8, 1024, 1, 8))
+        if packed:
+            # Lossless 12-bit planes: 25% less memory traffic.
+            configs += [("pgemv", 16, 256, 1, 4), ("pgemv", 8, 512, 1, 4), ("pgemv", 32, 128, 1, 4)]
+            if k % 8 == 0:
+                configs.append(("pwgemv", 16, 256, 1, 4))
+        configs += [("gemv", 8, 512, 1, 4), ("gemv", 16, 256, 1, 4)]
+        if k % 4 == 0:
+            # Plain BF16 storage, four weights per memory request.
+            configs.append(("wgemv", 16, 256, 1, 4))
+        configs.append(gemm("gemm", 64, 128))
     else:
-        configs += [gemm(32, 256), gemm(128, 128), gemm(32, 128)]
+        if packed:
+            configs += [gemm("pgemm", 64, 128), gemm("pgemm", 128, 128)]
+            if k % 8 == 0:
+                configs.append(gemm("pwgemm", 64, 128))
+        configs += [gemm("gemm", 64, 128), gemm("gemm", 128, 128)]
+        if k % 4 == 0:
+            configs.append(gemm("wgemm", 64, 128))
     return configs
 
 
@@ -216,6 +261,8 @@ def _choose(x, weight):
         if not bool(close.all()):
             continue
         if is_packed and not packing.exact_columns(weight, packed, config, _merge, m):
+            continue
+        if config[0] in ("wgemv", "wgemm") and not _exact_columns(weight, config, m):
             continue
         elapsed = _cold_graph_time(lambda: _project(x, weight, config), flush)
         if elapsed < best_ms * 0.985:

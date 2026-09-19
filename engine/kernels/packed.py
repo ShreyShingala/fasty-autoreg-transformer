@@ -6,7 +6,8 @@ are those of the plain BF16 kernels in ``kernels.linear``.
 
 A BF16 value is sign(1) | exponent(8) | mantissa(7). Trained weights occupy a
 narrow band of exponents, so one byte holds sign+mantissa and a 4-bit code
-holds ``exponent - base`` for a per-matrix ``base`` (codes 1..15). Code 0 with
+holds ``exponent - base`` for a per-row ``base`` (codes 1..15): output
+channels differ in scale, so one window per matrix refuses most matrices. Code 0 with
 a zero byte is +0.0. The rare weights outside the window ("exceptions": tiny
 values, outliers, denormals, -0.0) are stored as +0.0 in the planes and kept
 exactly, as BF16, in a small dense per-row side table that the same kernel
@@ -48,21 +49,24 @@ def _chunks(weight):
 
 
 def best_base(weight):
-    """The base whose window [base+1, base+15] covers the most weights."""
-    histogram = torch.zeros(256, dtype=torch.int64, device=weight.device)
+    """Per row, the base whose window [base+1, base+15] covers the most weights."""
+    bases = []
     for block in _chunks(weight):
-        histogram += torch.bincount(_fields(block)[1].reshape(-1), minlength=256)
-    histogram[0] = 0  # zeros and denormals never use a window code
-    cumulative = torch.cat((histogram.new_zeros(1), histogram.cumsum(0)))
-    covered = cumulative[16:257] - cumulative[1:242]  # base = 0..240
-    return int(covered.argmax().item())
+        exponent = _fields(block)[1].to(torch.int64)
+        histogram = torch.zeros((block.shape[0], 256), dtype=torch.int32, device=weight.device)
+        histogram.scatter_add_(1, exponent, torch.ones_like(exponent, dtype=torch.int32))
+        histogram[:, 0] = 0  # zeros and denormals never use a window code
+        cumulative = torch.cat((histogram.new_zeros((block.shape[0], 1)), histogram.cumsum(1)), dim=1)
+        covered = cumulative[:, 16:257] - cumulative[:, 1:242]  # base = 0..240
+        bases.append(covered.argmax(dim=1).to(torch.int32))
+    return torch.cat(bases)
 
 
 def exception_counts(weight, base):
     counts = []
-    for block in _chunks(weight):
+    for block, block_base in zip(_chunks(weight), base.split(_chunks(weight)[0].shape[0])):
         bits, exponent, _ = _fields(block)
-        code = exponent - base
+        code = exponent - block_base[:, None]
         counts.append(((bits != 0) & ((code < 1) | (code > 15))).sum(dim=1))
     return torch.cat(counts)
 
@@ -72,7 +76,7 @@ def _restore(sm, ex, base, ecol, evalues):
     nibbles = ex.to(torch.int32)
     code = torch.stack((nibbles & 15, nibbles >> 4), dim=-1).reshape(rows, columns)
     byte = sm.to(torch.int32)
-    exponent = torch.where(code > 0, code + base, torch.zeros_like(code))
+    exponent = torch.where(code > 0, code + base.to(torch.int32)[:, None], torch.zeros_like(code))
     bits = ((byte & 0x80) << 8) | (exponent << 7) | (byte & 0x7F)
     bits = torch.where(bits >= 0x8000, bits - 0x10000, bits).to(torch.int16)
     restored = bits.view(torch.bfloat16).clone()
@@ -90,7 +94,7 @@ def unpack(packed):
 def _pack_rows(weight, base, width):
     rows = weight.shape[0]
     bits, exponent, sign_mantissa = _fields(weight)
-    code = exponent - base
+    code = exponent - base.to(torch.int32)[:, None]
     inside = (code >= 1) & (code <= 15)
     exception = (~inside) & (bits != 0)
     counts = exception.sum(dim=1)
@@ -121,13 +125,14 @@ def pack(weight, base, width):
     if weight.dtype != torch.bfloat16 or columns % 2 or columns > 32767 or not 1 <= width <= MAX_EXCEPTIONS:
         return None
     parts = []
-    for block in _chunks(weight):
-        part = _pack_rows(block, base, width)
+    blocks = _chunks(weight)
+    for block, block_base in zip(blocks, base.split(blocks[0].shape[0])):
+        part = _pack_rows(block, block_base, width)
         if part is None:
             return None
         parts.append(part)
     sm, ex, ecol, evalues = (torch.cat(column).contiguous() for column in zip(*parts))
-    return Packed(sm, ex, base, ecol, evalues, width, (rows, columns))
+    return Packed(sm, ex, base.to(torch.uint8).contiguous(), ecol, evalues, width, (rows, columns))
 
 
 @triton.jit
@@ -170,14 +175,15 @@ def _load_words(sm_ptr, ex_ptr, rows, live, start, K: tl.constexpr, BLOCK_N: tl.
     return sm, code
 
 
-@triton.jit(do_not_specialize=["base"])
+@triton.jit
 def _packed_gemv(
-    x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base,
+    x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base_ptr,
     N: tl.constexpr, K: tl.constexpr, E: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr, WORDS: tl.constexpr,
 ):
     rows = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     live = rows < N
+    base = tl.load(base_ptr + rows, live, other=0).to(tl.int32)[:, None]
     columns = tl.arange(0, BLOCK_K)
     pairs = tl.arange(0, BLOCK_K // 2)
     acc = tl.zeros((BLOCK_N, BLOCK_K), tl.float32)
@@ -208,9 +214,9 @@ def _packed_gemv(
     tl.store(out_ptr + rows, result, live)
 
 
-@triton.jit(do_not_specialize=["base"])
+@triton.jit
 def _packed_gemm(
-    x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base,
+    x_ptr, sm_ptr, ex_ptr, ecol_ptr, eval_ptr, out_ptr, base_ptr,
     M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, E: tl.constexpr,
     SPLITS: tl.constexpr, CHUNK: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_E: tl.constexpr, WORDS: tl.constexpr,
@@ -219,6 +225,7 @@ def _packed_gemm(
     columns = tl.program_id(0).to(tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     split = tl.program_id(1)
     live = columns < N
+    base = tl.load(base_ptr + columns, live, other=0).to(tl.int32)[:, None]
     reduction = tl.arange(0, BLOCK_K)
     pairs = tl.arange(0, BLOCK_K // 2)
     acc = tl.zeros((16, BLOCK_N), tl.float32)
