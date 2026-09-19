@@ -28,19 +28,6 @@ DRAFTS_BY_MATCH = {
 }
 
 
-#: Linear score of a candidate first draft (kernels/spec.py::_propose_ranked):
-#: 9 terms by matched-suffix length 0..8, 9 by successor-table rank 0..7 and
-#: absent, then FIRST (continuation of the best match), CNT (x ln(1 + times it
-#: followed the newest token)) and UNI (x ln(1 + occurrences in the row)).
-#: Fitted offline on the model's greedy text with the two-context table
-#: (276 samples, six corpora, 2-fold CV): 1.5% fewer passes pooled, 2-2.7% at
-#: 2-5 tokens per row, versus longest-most-recent-match drafting.
-RANK_WEIGHTS = (
-    -1.78, -1.43, -0.41, 0.32, 0.91, 1.20, 1.50, 1.92, 2.68,
-    0.90, 0.42, 0.14, -0.01, -0.24, -0.36, -0.47, -0.47, -0.32,
-    1.01, 0.87, 0.36,
-)
-
 #: Expected verify passes per output token for each block size, from offline
 #: replays of the model's greedy text (276 samples) shrunk toward 1 by the
 #: factor seen on the platform's public batch-one case (0.57 of the offline
@@ -302,7 +289,6 @@ class DecodeState:
             self.move_from = torch.full((batch,), -1, dtype=torch.int64, device=self.device)
             self.move_to = torch.zeros(batch, dtype=torch.int64, device=self.device)
             self.cache.chain = self.chains
-            self.rank_weights = torch.tensor(RANK_WEIGHTS, dtype=torch.float32, device=self.device)
             self.pass_events = [torch.cuda.Event() for _ in range(output_length)]
         # Per block size: each block token's RoPE offset (the chain counts up,
         # alternatives stand where draft 1 stands; KV slots are position + t),
@@ -330,9 +316,9 @@ class DecodeState:
 
     def speculate(self):
         """One verify pass: result[b] = (tokens gained, greedy tokens), all on the GPU."""
-        tokens = spec.propose_ranked(
+        tokens = spec.propose(
             self.history, self.row_position, self.block_size, self.drafts_by_match,
-            self.model.successor, self.rank_weights, self.chains, self.phases,
+            self.model.successor, self.chains, self.phases,
         )
         positions = self.row_position[:, None] + self.phases
         rope = (self.cos[0][positions], self.sin[0][positions])

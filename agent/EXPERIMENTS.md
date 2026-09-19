@@ -1000,3 +1000,10 @@ Checks: `agent/local_cpu/compile_gemm_tiles.py` (grid/constants recorded from
 the real `_project`, cuda:90 compile on all four projection shapes, numpy
 replay of the pointer arithmetic: in-bounds, every cell once, FP64 product),
 consumers compile with 5 and 4 splits. Commit `53063e7`, not pushed yet.
+
+Result (candidate 49, ranked drafts on the candidate 48 stack): commit `80b0ec4`
+succeeded, **1090.3** (candidate 48: 1095.1); public 311.0 / 519.8 / 3152.0
+against 310.6 / 527.1 / 3224.2. The lab's 1.5-2.5% fewer passes did not pay for
+the heavier propose kernel (16 warps, three [history x 16] compares per row);
+public-2 fell 2.2%. Discard: reverted by a new commit (kernel and its checks
+stay in history at `80b0ec4`). Candidate 50's run still contains it.
