@@ -2536,3 +2536,37 @@ the split, at least, was already right. Reverted to (5, 8, 13, 14).
 What is still genuinely untested in the new regime is the *width* of the
 block, which is candidate 112, because that trades pass cost against draft
 count rather than reallocating a fixed number of slots.
+
+## The pacer binds, and it does not matter
+
+Both floor probes passed - no `unstable_timing` at either, so the spread gate
+had more room than the offline calibration suggested:
+
+| tree | public-0 TPOT | normalized | duration |
+| --- | ---: | ---: | ---: |
+| control, floor 0.70 (`ebcf59d`) | 2.925 | 1131.4 | 768 s |
+| **floor 0.65** (`5d4070a`) | **2.689** | 1129.8 | 678 s |
+| floor 0.58 (`b2c5225`) | 3.111 | 1118.5 | 676 s |
+
+**The floor binds**: 0.70 -> 0.65 cut batch-1 TPOT by 8.1% against a predicted
+7.7%. That settles the question left open two ticks ago - `EXPECTED_PASSES`'
+shrunk 1.28 tokens/pass understates what the platform actually accepts, and
+the 2.82 ms floor was the batch-one TPOT.
+
+**And the hidden score did not move**: 1129.8 against a contemporaneous 1131.4.
+An 8% improvement in the batch-one public probe bought nothing that is scored.
+That is the same lesson as the public-throughput inversion, now with a
+mechanism: the public probes and the scored workloads respond to different
+things, and batch-one short-output pacing is one of them.
+
+Floor 0.58 going backwards (TPOT 3.111) is consistent with `pace_seconds`
+being clamped from below by `PACE_MEDIAN x` the running median of unpaced
+speeds - past some point the floor stops being what sets the rate.
+
+Two probes out to find where the scored workloads actually live: floor 0.65
+for SHORT outputs only (`233924f`, dryfter) and floor 0.52 for LONG outputs
+only (`87bd3bd`, 0xDeadBeaf), each leaving the other constant alone. The 0.65
+run changed both at once, so its null result cannot distinguish "the floor does
+not matter to the hidden set" from "the hidden set is long-output and 0.56 was
+too aggressive there". If the LONG probe moves the score, the scored workloads
+are >= 96 output tokens and that is worth knowing on its own.
