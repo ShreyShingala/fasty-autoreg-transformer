@@ -17,60 +17,48 @@ this after the run), TTFT/TPOT <= 1.10x native, <= 25% spread across the five
 samples, <= 90% memory, and the WHOLE run (six workloads: load + warmup +
 samples) is killed at **900 s** — we have been killed twice by this.
 
-## Where we are
+## Where we are — 2026-09-20
 
 | | score | note |
 |---|---|---|
-| SSS (us) | **1130.6** | commit `822ce98` (candidate 67) |
-| dryfter | 1123.9 | merged team, see below |
-| Silver Bullet | 1112.7 | merged team |
-| zip | 1059.4 | |
+| **Segfault** | **1198.9** | took the lead; went 1064.4 -> 1176.4 -> 1198.9 in about an hour |
+| SSS (us) | 1144.3 | `c758faf` (the base tree); we are #2 by 4.8% |
+| 0xDeadBeaf | 1142.9 | fourth queue, ours |
+| dryfter | 1138.7 | merged team |
+| Silver Bullet | 1137.7 | **handed to another agent for a from-scratch architecture** |
 
-**The engine is at a plateau of ~1125-1131 normalised.** Identical code scored
-1130.6 and 1115.5 on two runs; warmup tuning outcomes differ per run and move
-public TPOT by up to 10%. Treat anything under ~2% as unreadable in one run.
-Read every result with `cd agent/tools && python3 report_runs.py 16`: it prints
-score, duration, a **node-speed control** (native's prefill TTFT, measured in
-the same run) and the normalised score. Always record the normalised number.
+### Two measurement rules that matter more than anything else here
 
-## The three accounts = three run queues (the merged team)
+**1. Paired draws of the same tree agree to ~0.1-0.2% normalized.** Base
+1143.7/1143.6, candidate 106 1139.8/1140.9, refine-share 1121.5/1122.1, fused
+argmax 1123.6/1121.0. The often-quoted 1.33% sigma is the spread of the RAW
+score and is dominated by node speed; `report_runs.py` divides it out using
+native's own prefill TTFT measured in the same run. So **a 0.5% change is
+readable in one run** — the old "needs 3%" bar is wrong. Discard any run whose
+`node` column is more than ~5% off: one drew a 30%-slow node and scored 1053
+on the byte-identical base tree.
 
-The organisers allowed SSS, dryfter and Silver Bullet to merge. We have push
-access to both other repos:
-- `https://github.com/john-jpet/fast-transformer` (dryfter)
-- `https://github.com/sivakovivan/silver-transformer` (Silver Bullet)
+**2. Public tokens/s moves OPPOSITE to the score. Do not use it.** The base has
+nearly the lowest public-0 throughput of twelve measured trees (307.6
+normalized) and the highest score. Every change we measured as a ~2% regression
+is 4-6% FASTER on the batch-1 public probe. Only the hidden workloads are
+scored, and they respond to something the public probes do not.
 
-**Each push to a repo's `main` starts one official run on that team's queue.**
-That is three parallel experiment slots instead of one (a run takes 10-15 min
-and the platform is FIFO per team). Use them like this:
+### The thing to understand before changing anything
 
-- **SSS `main` (ShreyShingala/fasty-autoreg-transformer) is the trunk.** All
-  development happens here; only candidates that have passed every local gate
-  go in. The user asked explicitly for this.
-- **The other two repos are for quick parallel experiments**: a second draw of
-  the same tree (to harvest run-to-run noise: the board keeps each team's
-  best), or one isolated variant you want a read on without spending the trunk
-  slot.
-- **Dispatch without rewriting their history** — create a merge commit whose
-  tree is our candidate and whose parents are our commit and their current
-  main, then fast-forward:
-  ```
-  git fetch https://github.com/john-jpet/fast-transformer +main:refs/remotes/mate/main
-  git push https://github.com/john-jpet/fast-transformer \
-    $(git commit-tree <our-sha>^{tree} -p <our-sha> -p mate/main -m "Merged team: <what>"):refs/heads/main
-  ```
-  (Same for `sivakovivan/silver-transformer` with `silver/main`.) If the push
-  is rejected, re-fetch and redo the commit-tree: their main moved.
-  **In this Claude session those pushes are blocked by a safety classifier;
-  the user runs them with `! <command>`. Check whether your harness allows
-  them directly.**
-- **Reading their results:** our API token only sees SSS runs. For the other
-  two teams you only see their leaderboard best, so a dispatched candidate
-  reads out only if it beats that team's previous best (dryfter 1123.9, Silver
-  Bullet 1112.7). Plan dispatches accordingly — send them things you expect to
-  be at least as good as our trunk, or second draws.
-- Both other repos also track our `main` on their own, so anything we push is
-  theirs within the hour anyway.
+Twelve trees measured. **Only two did not lose: `num_stages` 2->3 (neutral in
+its own right) and candidate 106 (which only affects shapes above 16 sequences,
+and the hidden set has none).** Everything substantive cost 1.9-4.3%, clustered
+tightly near -2% — including two changes proven bit-identical offline, one of
+which provably cuts memory instructions 8x.
+
+Nine independent mechanisms in six files do not all cost the same 1.9% by
+coincidence. The working hypothesis is that the hidden score is set by **which
+layouts warmup tuning settles on**: any edit perturbs compile and timing order,
+`_choose` and `refine` then judge slightly different things, and the base's
+outcome happens to be the good one. If that is right, incremental edits are
+taxed ~2% before they start, and only a change worth clearly more than that can
+show up.
 
 ## How the engine works (read the code, this is the map)
 
