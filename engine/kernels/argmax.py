@@ -122,17 +122,8 @@ def fused_argmax(x, weight, block_n=64, block_k=128):
 def greedy_tokens(x, weight, linear):
     """Greedy token per row of x @ weight.T: the fused kernel where the captured pass prefers it, else project + argmax.
 
-    The fused path is taken once it agrees with the projection path on the row
-    count in use, and is still offered to ``DecodeState.refine`` as a knob so
-    the captured pass can put it back if it turns out slower.
-
-    It used to default off and rely on refine to find it. Refine races every
-    knob against one deadline and the knobs that recompile a kernel come first,
-    so on most workloads this one was never judged at all -- and it is the only
-    option in the list that needs no recompile to try. Defaulting to the fused
-    path makes the saving (one launch, and no [rows, 151936] logit tensor
-    written and read back) the thing that has to be argued away rather than
-    the thing that has to be found.
+    The fused path is offered to ``DecodeState.refine`` as a knob (default off)
+    once it agrees with the projection path on the row count in use.
     """
     rows = x.shape[0] * (x.shape[1] if x.dim() == 3 else 1)
     key = (x.device, rows, weight.shape[0], weight.shape[1])
@@ -148,11 +139,8 @@ def greedy_tokens(x, weight, linear):
                 print(f"fused argmax skipped: {error!r}", flush=True)
                 agrees = False
             if agrees:
-                # Proven equal to the projection path at this row count, so it
-                # is the default; the knob now offers going back, not going to.
-                _FUSED[key] = True
                 register(
-                    ("fused_argmax",) + key[1:], rows, weight.shape[0] * weight.shape[1] // 36 + 1, [True, False],
+                    ("fused_argmax",) + key[1:], rows, weight.shape[0] * weight.shape[1] // 36 + 1, [False, True],
                     lambda: _FUSED[key], lambda option: _FUSED.__setitem__(key, option),
                 )
     if _FUSED[key]:

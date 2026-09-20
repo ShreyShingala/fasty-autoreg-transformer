@@ -341,6 +341,10 @@ def _cold_graph_time(fn, flush):
 #: tiles were tried in candidate 68: their extra shapes and slow 64-lane
 #: compiles pushed the whole run past the 900 s limit.)
 MAX_ROWS = 32
+#: Resident CTA slots for the skinny GEMM on an H100: 8 CTAs/SM x 132 SMs,
+#: register-bound (64 registers over 128 threads), measured with
+#: `cuobjdump -res-usage` on the cuda:90 cubin.
+SLOTS = 1056
 _CHOICES = {}
 _VALIDATED = {}
 _TUNING_DEADLINE = None
@@ -352,12 +356,26 @@ def _candidates(m, n, k):
     """Official runs: wider tile searches, lossless 12-bit planes and word-sized
     loads never beat these in the captured step, so keep the list short."""
     def gemm(block_n, block_k):
-        splits = min(8, triton.next_power_of_2(triton.cdiv(512, triton.cdiv(n, block_n))))
-        return ("gemm", block_n, block_k, splits, 4)
+        # Split to FILL the machine, not to reach a program count. Compiled for
+        # cuda:90, `_skinny_gemm` is 64 registers over 128 threads against 20 KB
+        # of shared memory, so registers bind first at 8 CTAs/SM: **1056
+        # resident slots**. The old rule aimed at 512 programs and left down at
+        # 160 CTAs -- 15% of the machine -- while that projection carries a
+        # quarter of every layer's weight bytes. One split more than fits would
+        # cost a second wave, so the ceiling is slots / tiles and `exact_splits`
+        # takes the largest whole-block count under it: qkv 480 -> 960, o
+        # 320 -> 640, down 160 -> 760, gate_up unchanged at 608, every one of
+        # them still a single wave.
+        #
+        # This is deliberately the inverse of candidate 103, which cut the same
+        # knob the other way to save 444 MB of FP32 partials and lost 4.3%. That
+        # measured the gradient: the partials are L2-resident on a 50 MB L2, so
+        # cutting them removed no HBM traffic at all, only concurrent CTAs.
+        return ("gemm", block_n, block_k, exact_splits(k, block_k, max(1, SLOTS // triton.cdiv(n, block_n))), 4)
 
     def tiled(kind, block_n, block_k):
-        # Whole-block splits: K=2560 takes 5 where the power of two left one
-        # of 8 split programs entirely masked; K=9728 takes 4.
+        # Whole-block splits: K=2560 takes 10 of the 11 that fit, K=9728 takes
+        # 19 of 26, because a chunk must tile K with whole BLOCK_K blocks.
         return (kind, block_n, block_k, exact_splits(k, block_k, gemm(block_n, block_k)[3]), 4)
 
     def hoisted(block_n, block_k, kind="hoist"):
