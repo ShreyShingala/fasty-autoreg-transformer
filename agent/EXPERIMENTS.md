@@ -2813,3 +2813,31 @@ instrument, it just has not been pointed at enough text.
 `0ce0657`'s 1132.5 in the same window. No gain over 0.80, and both sit near the
 contemporaneous field. The knee is not below 0.80; combined with the floor
 results, the pacing track is close to exhausted.
+
+## The pacing stack holds up: 1137.4
+
+`6ce1451` (margin 1.0 + release floor 0.65 + PACE_FLOOR_LONG 0.60 +
+PACE_MEDIAN 0.80): **1133.1 raw, 1137.4 normalized, node +0.4%, 822 s**,
+against `8f9ed7c` (margin 1.0 alone) at 1130.9 / 744 s in the same window. So
+the pacing stack is worth about **+0.6%**, which matches the short floor's
+first measurement exactly. That is the one gain of this session that has
+reproduced.
+
+822 s is worth watching: the cap has cancelled two runs, and this is the
+longest passing run we have had.
+
+## Candidate: one more verify pass in flight (`7eb8dd5`)
+
+`SPEC_LOOKAHEAD_WIDE` is how many passes are queued ahead of the host. Its own
+comment says why it exists - above batch two the release pace never binds, so
+the queue is there purely to stop the GPU waiting on the host between passes -
+and it has been 3 since it was written, never measured against 4.
+
+The cheapest untested lever left: an existing code path with a different value,
+it cannot change a token, and it costs the memory of one more in-flight pass.
+Flat is a useful answer too, because it closes the question of whether the host
+is ever why a pass starts late.
+
+Built on the trunk (exact greedy + the pacing stack). The trunk is still
+measuring, so a **control of it goes out in the same window** (`4cc867f`) -
+necessary because the bar drifts ~3% an hour.
