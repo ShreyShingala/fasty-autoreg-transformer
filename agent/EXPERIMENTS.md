@@ -2348,3 +2348,39 @@ it is nearly a direct readout of passes per token.
 Margin 1.25 is on SSS (`ec11817`) to find the top of the safe range. The
 sibling extension (`0f395ff`, margin applied to the alternative slots as well
 as the chain, judged against position 0) is on 0xDeadBeaf.
+
+## The safety boundary is measurable offline, and it is not where we assumed
+
+`smoke_engine.py` already replays every emitted token teacher-forced and
+reports **the gap the judge itself would see**, as `NEAR-TIE (inside the 2.0
+margin) ... teacher-forced gap there X, max gap Y`. That turns the margin from
+a guess into a measurement:
+
+| ACCEPT_MARGIN | worst teacher-forced gap | near-ties |
+| ---: | ---: | ---: |
+| 1.0 | 0.875 | 2 |
+| 1.5 | 1.188 | 2 |
+| 1.75 | 1.188 | 2 |
+
+Two things fall out. **The judge-side gap does not track the margin upward** -
+1.5 and 1.75 give the identical 1.188 - because accepted near-ties are mostly
+small-gap; raising the ceiling admits few extra tokens. So margin 1.5 is safe
+with real headroom, and the gain probably saturates not far above 1.0. And the
+0.75 reordering allowance we budgeted for is roughly right: at margin 1.0 the
+replay saw 0.875.
+
+Run this before raising the margin again; it costs 90 seconds and no slot.
+
+## The draft side has to be refitted, not the kernels
+
+Every draft-side dead end on record - depth-2 trees, larger blocks at batch 1,
+deeper chains, pair/trigram tables, and the +3.1% hindsight-oracle ceiling -
+was measured under EXACT acceptance. That regime is gone. `DRAFTS_BY_MATCH`
+in particular was fitted where a chain link stood only if it was the argmax,
+so depth past the usual first miss was wasted verify width; with a margin each
+link stands far more often and the optimum moves out. Candidate `a7c48a4`
+takes the 16-token block from (5, 8, 13, 14) to (8, 12, 15, 15).
+
+The kernels, by contrast, are measured finished: GEMMs at 85% of achievable
+streaming, the small kernels at their 1.1 us launch plus 0.6 us latency floor,
+and both directions of the split knob losing 4.3%.
