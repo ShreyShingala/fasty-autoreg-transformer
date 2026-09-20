@@ -2413,3 +2413,50 @@ acceptance and the 16-token block goes from (5, 8, 13, 14) to (8, 12, 15, 15).
 Built on the measured margin-1.0 tree, not on the unmeasured sibling variant,
 so it is one change against a base with a number. Gates: unit tests, archive
 ok, `SMOKE OK 85s`, worst teacher-forced gap 0.875 against the judge's 2.0.
+
+## The pacer is the bottleneck, not the engine
+
+The contemporaneous control finally made this visible. Three runs, same hour:
+
+| tree | normalized | duration |
+| --- | ---: | ---: |
+| base CONTROL `ebcf59d` | 1131.4 | 768 s |
+| margin 1.0 `dd14cb7` | 1145.0 | 652 s |
+| sibling margin `9887d66` | 1134.6 | **646 s** |
+
+The relaxed runs finish **15% faster** and score about **1%** better. Those
+cannot both be true of an engine whose throughput is what is scored - unless
+something is holding the tokens back. It is:
+
+    target = self.started + step * self.pace_seconds        # decode.py:636
+    self.pace_seconds = self.pace_floor() * self.pass_seconds
+
+`pace_floor()` returns 0.70, so a token is not released before
+0.70 x 4.03 ms = **2.82 ms**. The engine's own rate at 1.83 accepted tokens a
+pass is 4.03 / 1.83 = **2.20 ms**. The reported batch-1 TPOT of 2.83-2.93 ms
+is not the engine, it **is the floor** - and at every floor down to 0.55 the
+engine is still the faster of the two. Up to **27%** of batch-1 throughput is
+being given away to a constant.
+
+| floor | ms/token | against 0.70 |
+| ---: | ---: | ---: |
+| 0.70 | 2.82 | - |
+| 0.65 | 2.62 | +7.7% |
+| 0.62 | 2.50 | +12.9% |
+| 0.58 | 2.34 | +20.7% |
+| 0.55 | 2.22 | +27.3% |
+
+The floor exists for the 25% sample-spread gate, and **relaxed acceptance is
+what makes lowering it safe**: more acceptance, and more uniform acceptance,
+tightens the very distribution the floor protects. Recent public-0 samples
+spread 8.5% against a 25% gate. The old warning against going below 0.70 came
+from candidate 34, an engine with far lower acceptance that once measured
+24.6%.
+
+Two points dispatched on the margin-1.0 tree: floor 0.65 (`54e6c9a`, dryfter)
+and floor 0.58 (`6784b9a`, 0xDeadBeaf). `PACE_FLOOR_MIN` moves with each,
+because `pace_floor()` clamps into `[MIN, PACE_FLOOR]`.
+
+This is also why the draft refit looked disappointing: acceptance gains were
+being converted into shorter runs instead of higher scores. Fix the pacer and
+every acceptance gain already banked starts counting.
