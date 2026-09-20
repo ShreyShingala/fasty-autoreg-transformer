@@ -3076,3 +3076,35 @@ This also lowers the prefill estimate in the lever table. The +4.0% there
 assumed ~29 ms was reachable; the one concrete mechanism for reaching it is now
 measured backwards, and prefill is already ~1.9x faster than native. Treat
 prefill as near its practical limit unless a genuinely fused kernel appears.
+
+## The warmup tuning budget cuts off the largest GEMM
+
+`_PROCESS_SECONDS` is the total warmup tuning budget, `_SHAPE_SECONDS` the
+per-shape one. Five projection shapes at 6 s each want 30 s; the process cap is
+**28**, so the last shape never gets a full search - and the shapes are walked
+in order, which puts **lm_head, at 2374 tiles the largest GEMM in the pass**,
+at the end of the queue.
+
+| `_PROCESS_SECONDS` | shapes fully searched | run grows to |
+| ---: | ---: | --- |
+| 28.0 (shipped) | 4 of 5 | 750 s |
+| **34.0** | **5 of 5** | ~786-804 s |
+| 40.0 | 5 of 5 | ~822-858 s |
+
+Raising `_SHAPE_SECONDS` instead does nothing: the process cap is what binds.
+34.0 is the smallest value that covers all five, which keeps the cap risk to
+the minimum that buys the whole search. Candidate held: `36df4c0`.
+
+The risk is precisely the thing the run cap measures, and it is bounded: a
+cancellation costs a slot and tells us the budget, not the search, is the
+constraint. Silver Bullet ran 34.0 once on a different tree and it was their
+best score, which is weak corroboration but points the same way.
+
+## The host release loop is not the bottleneck
+
+Checked after the lookahead win, since that came from the host starving the
+GPU: `fill()` calls `absorb(False)` before topping the queue up, and the
+pacing wait calls `fill()` on every spin, so passes are banked and re-queued
+throughout the wait rather than only between tokens. The `time.sleep(0.001)`
+only runs while more than 2 ms remains, so the last 2 ms is a busy spin that
+keeps the queue full. No change needed here.
