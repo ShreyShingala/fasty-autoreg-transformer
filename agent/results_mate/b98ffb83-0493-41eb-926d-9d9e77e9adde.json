@@ -1,0 +1,23 @@
+{
+ "id": "b98ffb83-0493-41eb-926d-9d9e77e9adde",
+ "submissionId": "e6a55bde-2849-46bd-af5e-de5e7ffec8fe",
+ "teamId": "a50f29a6-5f0e-4696-bd9f-992175975248",
+ "challenge": "decode",
+ "mode": "official",
+ "state": "canceled",
+ "priority": 10,
+ "attempt": 1,
+ "maxAttempts": 3,
+ "submissionDigest": "3c045162581f9aab8e61311572a91d713875f7c3944d50c1082e91bdabf23985",
+ "challengeSpecDigest": "b103e41b682f2e7c1dead713db0a4d104d0045b53162efdd7b4039fd51562ee0",
+ "runtime": "triton-cu124-py311",
+ "commitSha": "210f6b2b7ffece9ada7ce131aa73bc717aa0db5f",
+ "errorCode": null,
+ "errorMessage": "Superseded by SSS record engine eacec5d and lookahead experiment 686331f",
+ "queuedAt": "2026-09-19T20:33:01.226965+00:00",
+ "startedAt": "2026-09-19T20:55:23.882358+00:00",
+ "finishedAt": "2026-09-19T20:57:31.454332+00:00",
+ "createdAt": "2026-09-19T20:32:59.810606+00:00",
+ "result": null,
+ "cancelRequested": true
+}

@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+*.tar.gz
+.DS_Store
+agent/results/

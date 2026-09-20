@@ -1,0 +1,23 @@
+{
+ "id": "e3c3a171-8797-4fd8-9962-54ac878a9159",
+ "submissionId": "ad5ff0d9-bc5d-4f92-9396-e58bba7deb1c",
+ "teamId": "a50f29a6-5f0e-4696-bd9f-992175975248",
+ "challenge": "decode",
+ "mode": "official",
+ "state": "canceled",
+ "priority": 10,
+ "attempt": 0,
+ "maxAttempts": 3,
+ "submissionDigest": "e34a0d34e784f6698d3e775dcf3cd0ac553b2549809a258b56dfb977ac2ce2c6",
+ "challengeSpecDigest": "b103e41b682f2e7c1dead713db0a4d104d0045b53162efdd7b4039fd51562ee0",
+ "runtime": "triton-cu124-py311",
+ "commitSha": "6c8b6aa989f48a2fe317e70a0a26e204ae840690",
+ "errorCode": null,
+ "errorMessage": "Superseded after E04 incorrect_output: restore the last validated draft table before testing argmax",
+ "queuedAt": "2026-09-19T17:04:14.347145+00:00",
+ "startedAt": null,
+ "finishedAt": "2026-09-19T17:12:44.138652+00:00",
+ "createdAt": "2026-09-19T17:04:13.292421+00:00",
+ "result": null,
+ "cancelRequested": false
+}
