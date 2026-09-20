@@ -2166,3 +2166,42 @@ different files, several proven bit-identical offline, do not all cost the same
 (`a227c54`, `engine/` byte-identical to `c758faf`) to test the alternative:
 that the platform has shifted under us since the two 1143.x draws and the whole
 comparison bar is stale.
+
+## Public throughput does not predict the hidden score - at all
+
+Node-normalized public-0 tokens/s beside the normalized score:
+
+| tree | norm score | public-0 (norm) | public-1 | public-2 |
+| --- | ---: | ---: | ---: | ---: |
+| **base `c758faf`** | **1143.7** | **307.6** | **541.2** | 3201.6 |
+| `num_stages` 3 | 1143.6 | 325.3 | 531.0 | 3203.8 |
+| c106 | 1139.8 | 327.9 | 522.0 | 3211.8 |
+| mailbox | 1122.4 | 323.2 | 531.9 | 3295.2 |
+| refine share | 1121.5 | 322.1 | 533.4 | 3194.5 |
+| lead-in | 1114.4 | 321.2 | 533.3 | 3246.2 |
+
+**The base has nearly the LOWEST public-0 throughput of the whole set, and the
+highest score.** Every change we called a regression is *faster* than the base
+on the batch-1 public probe - by 4 to 6% - and still scores 2% lower. The
+score comes only from the hidden workloads, and it moves opposite to the
+public signal.
+
+Three things follow.
+
+1. **Stop reading public tokens/s as a proxy.** It has been actively
+   misleading. Only the normalized score counts, and paired draws make it
+   trustworthy to ~0.1-0.2%.
+2. These are not noise. Every tree measured twice reproduced to within 0.2%
+   (base 1143.7/1143.6, c106 1139.8/1140.9, refine 1121.5/1122.1, fused argmax
+   1123.6/1121.0). Each tree has a stable hidden score and the base's is the
+   best of twelve.
+3. So the hidden shapes respond to something the public shapes do not. The
+   most likely candidate is **which layouts warmup tuning settles on**: every
+   change perturbs compile and timing order, `refine` and `_choose` then judge
+   slightly different things, and the base's outcome happens to be the good one
+   on shapes we cannot see. That is consistent with three separate warmup
+   perturbations each costing ~2%, and with changes that are provably
+   bit-identical costing the same.
+
+The base re-draw queued on 0xDeadBeaf (`b9b78ea`) tests the remaining
+alternative - that the bar itself has moved.
