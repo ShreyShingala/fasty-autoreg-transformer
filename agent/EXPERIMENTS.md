@@ -2080,3 +2080,48 @@ It is why three separate ~2% regressions were real rather than noise, and it
 means a 0.5% win is worth a slot. Keep using the normalized column, keep
 discarding any run whose node is more than ~5% off, and prefer a second draw
 on a partner queue when a result decides something expensive.
+
+## The SwiGLU epilogue is dead before it was built
+
+The design review ranked it the best unbuilt item at +1.5-2.6%. Priced against
+our own measurements it is not:
+
+- It saves **36 launches a pass at ~1.1 us = 40 us = 0.98%** of the pass. That
+  is the whole prize, because decode already avoids the `[rows, 19456]` round
+  trip: the split GEMM hands FP32 partials straight to `_swiglu` through
+  `merged.Split`.
+- It buys that by forcing `SPLITS = 1` on gate_up, taking it from **608 CTAs
+  to 304** -- and gate_up carries **49.4% of every layer's weight bytes**.
+  Candidate 103 made that exact 2x cut on gate_up, as part of a change that
+  cost 4.3%.
+
+Trading a measured CTA halving on the largest projection for a 0.98% launch
+saving is the candidate-103 trade again. **Not built.** The same argument
+retires the residual-add epilogue and the QK/RoPE epilogue, which pay the same
+price on o/down and qkv: **the whole epilogue-fusion track is dead on the CTA
+constraint**, not on the arithmetic.
+
+## Candidate 107 - split to fill the machine (held, gated, `8966d12`)
+
+Candidate 103 measured the gradient of the split knob and we read it backwards
+at the time. The FP32 partials are L2-resident, so cutting splits removed no
+HBM traffic, only concurrent CTAs -- and cost 4.3%. So turn it the other way.
+
+The old rule aimed at 512 programs. The real ceiling is what the machine holds:
+1056 resident slots for `_skinny_gemm` (64 registers over 128 threads, so
+register-bound at 8 CTAs/SM). Sizing splits to `slots / tiles` and letting
+`exact_splits` take the largest whole-block count under it gives:
+
+| projection | tiles | splits | CTAs | was |
+| --- | ---: | ---: | ---: | ---: |
+| qkv | 96 | 10 | 960 | 480 |
+| o | 40 | 16 | 640 | 320 |
+| gate_up | 304 | 2 | 608 | 608 |
+| down | 40 | 19 | **760** | **160** |
+
+Every one still a single wave. `down` was running 15% of the machine while
+carrying a quarter of each layer's weight bytes. FP32 partial traffic rises
+12.8 -> 24.3 MB a layer, still inside a 50 MB L2.
+
+Gates: unit tests, `archive ok`, 118/118 interpreter kernels, `SMOKE OK 83s`.
+Waiting on a free queue; all four are busy.
