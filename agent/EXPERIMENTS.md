@@ -3108,3 +3108,30 @@ pacing wait calls `fill()` on every spin, so passes are banked and re-queued
 throughout the wait rather than only between tokens. The `time.sleep(0.001)`
 only runs while more than 2 ms remains, so the last 2 ms is a busy spin that
 keeps the queue full. No change needed here.
+
+## `harness_error` on the constexpr retest - the platform's, retrying itself
+
+SSS `e2bddbd` hit `harness_error`: "the harness could not complete this
+measurement. This is ours to fix rather than yours." It is on attempt 2 of 3
+and retrying automatically. `AGENTS.md` is explicit that `harness_error` and
+infrastructure codes are the platform's and should be retried rather than
+rewritten, so nothing to change; the candidate is unaffected.
+
+## Why `MAX_ROWS = 32` stays, priced rather than guessed
+
+Worth writing down because it looks like an obvious win and is not.
+`block_candidates(16)` returns [2, 4], so a 4-token block at batch 16 is **64
+rows**, above `MAX_ROWS`, and `linear()` sends anything above it to
+`F.linear` - meaning **batch-16 shapes run all four projections through cuBLAS,
+bypassing the tuned split-K Triton path entirely**. cuBLAS is weak on skinny
+GEMMs, which is the whole reason that path exists.
+
+The cost of raising it: `_candidates(64, ...)` is a new specialisation per kind
+per shape, roughly 5 x 5 = 25 compiles at ~2 s, so ~50 s per workload and
+300-450 s on a run already at 750-820 s against a ~900 s cap. That is
+infeasible, and it is precisely why candidate 68 was cancelled.
+
+It becomes reachable only if warmup gets much cheaper, which makes the compile
+budget - not the GEMM - the thing standing between us and batch-16 shapes using
+their own kernels. Noting it as the largest *blocked* lever rather than a dead
+one.
