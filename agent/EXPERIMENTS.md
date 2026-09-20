@@ -2946,3 +2946,32 @@ it was committed - the later `git checkout <branch> -- engine/layers.py` then
 silently restored nothing, and only a `grep -c` caught it. **Commit a candidate
 before switching branches, and verify the file actually contains the change
 after any cross-branch checkout.**
+
+## Inventory of every remaining tunable constant
+
+The lookahead win came from a constant nobody had measured, so here is the rest
+of them, with what is known:
+
+| constant | value | status |
+| --- | ---: | --- |
+| `SPEC_LOOKAHEAD_WIDE` | 4 | **+0.9% measured**; 6 in flight |
+| `SPEC_LOOKAHEAD` | 2 | never measured; 3 in flight with the above |
+| `PACE_FLOOR` / `_LONG` / `_MEDIAN` | 0.65 / 0.60 / 0.80 | banked +0.6%, both directions tried, exhausted |
+| `WORST_PASSES` | 0.90 | dead-ends at the median clamp |
+| `MAX_ROWS` | 32 | raising it routes 64-row blocks to Triton; c68 blew the cap |
+| `_PROCESS_SECONDS` | 28.0 | 34.0 scored Silver Bullet's best once, but on a different tree |
+| `_SHAPE_SECONDS` | 6.0 | never measured |
+| `_TUNING_SECONDS` / `_WIDE_` | 0.0 | the plain-decode layout search never found a winner |
+| `PREFILL_CHUNK` | 1024 | in flight; 1536 and 768 bracket the L2 knee if it pays |
+| `LONG_OUTPUT` | 96 | the short/long pacing boundary, never moved |
+
+The warmup budgets (`_PROCESS_SECONDS`, `_SHAPE_SECONDS`) are the most
+tempting and the most dangerous: more tuning may find better layouts, but
+recent runs are **788-822 s against a cap that has already cancelled two**, and
+warmup is what the cap measures. If anything comes back cancelled, these come
+DOWN before anything else goes up.
+
+`LONG_OUTPUT = 96` is the sleeper. It decides which shapes take
+`PACE_FLOOR_LONG` rather than `PACE_FLOOR`, and we know the scored set contains
+long-output workloads - so where the boundary sits decides which floor they
+get, and it has never been moved.
