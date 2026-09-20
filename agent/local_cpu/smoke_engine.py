@@ -62,6 +62,7 @@ def parse():
     parser.add_argument("--real-tuning", action="store_true", help="keep the kernels' own timing loops (slow)")
     parser.add_argument("--mutate", choices=("relocate", "limit"), help="break the engine on purpose: the run must FAIL")
     parser.add_argument("--strict", action="store_true", help="fail on near-ties too")
+    parser.add_argument("--all-gaps", action="store_true", help="teacher-forced replay gap for EVERY emitted token")
     return parser.parse_args()
 
 
@@ -175,6 +176,7 @@ def main():
         settle = decode.spec.settle
         decode.spec.settle = lambda tokens, greedy, position, limit, *rest: settle(tokens, greedy, position, limit + 64, *rest)
     failures, near_ties = [], []
+    every_gap = []
     engine = engine_module.Engine(args.model)
     print(f"engine loaded, {time.time() - started:.0f}s", flush=True)
     for shape, order, expecteds in plans:
@@ -201,6 +203,13 @@ def main():
             if state.speculative:
                 detail += f" passes={state.passes_enqueued} for {output - 1} tokens"
             print(f"{label}: {len(got)} steps, {len(wrong)} mismatches, {detail}, {time.time() - began:.1f}s", flush=True)
+            if args.all_gaps:
+                for row in range(batch):
+                    produced = [step[row] for step in got]
+                    if not produced:
+                        continue
+                    for step, gap in enumerate(replay_gaps(native, prompts[row], produced)):
+                        every_gap.append((gap, f"{label} row {row} step {step} token {produced[step]}"))
             for row in sorted({r for _, r in wrong}):
                 first = min(s for s, r in wrong if r == row)
                 produced = [step[row] for step in got]
@@ -208,6 +217,17 @@ def main():
                 message = (f"{label} row {row}: first mismatch at step {first} (engine {produced[first]}, native "
                            f"{expected[first][row]}), teacher-forced gap there {gaps[first]:.3f}, max gap {max(gaps):.3f}")
                 (failures if max(gaps) > 2.0 or args.strict else near_ties).append(message)
+    if every_gap:
+        every_gap.sort(key=lambda pair: -pair[0])
+        values = [g for g, _ in every_gap]
+        n = len(values)
+        buckets = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        counts = {b: sum(1 for g in values if g > b) for b in buckets}
+        print(f"GAPS over {n} emitted tokens: max {values[0]:.4f} "
+              f"p99 {values[max(0, n // 100)]:.4f} mean {sum(values) / n:.4f}")
+        print("GAPS exceeding:", " ".join(f"{b}:{counts[b]}" for b in buckets))
+        for gap, where in every_gap[:12]:
+            print(f"GAP {gap:.4f}  {where}")
     print("kernel launches:", dict(sorted(triton.LAUNCHES.items())))
     print("kv relocations (kept alternatives):", references.RELOCATIONS[0])
     for message in near_ties:
