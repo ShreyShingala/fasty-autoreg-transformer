@@ -25,14 +25,21 @@ from kernels import spec
 #: worth up to 0.75 by the contract's own calibration - so what is left of the
 #: 2.0 after this is the headroom for that reordering. 0.0 restores exact
 #: greedy decoding. Authorised by the organisers on 2026-09-20.
-ACCEPT_MARGIN = float(__import__('os').environ.get('FASTY_ACCEPT_MARGIN', 1.25))
+ACCEPT_MARGIN = float(__import__('os').environ.get('FASTY_ACCEPT_MARGIN', 1.0))
 
 #: Chain drafts by matched-suffix length (0-1 / 2-3 / 4-7 / 8+) for each block
 #: size; the rest of a block are alternatives to draft 1. Fitted offline on the
 #: model's greedy text (192 samples, six corpora): 1.4-3.6% fewer passes than
 #: the best fixed split at every size.
+#: Chain depth by matched-suffix length, per block size. Fitted under EXACT
+#: acceptance, where a link stood only if it WAS the argmax, so depth past the
+#: usual first miss was wasted verify width and the fit pushed it back into
+#: siblings. A margin moves that optimum out: each link now stands far more
+#: often, so a longer chain pays where it did not, and the sibling slots that
+#: insured against an early miss are worth less. Warmup still measures the
+#: block sizes against each other and keeps the faster.
 DRAFTS_BY_MATCH = {
-    16: (5, 8, 13, 14), 8: (2, 4, 6, 7), 5: (2, 3, 4, 4), 4: (1, 2, 3, 3),
+    16: (8, 12, 15, 15), 8: (4, 6, 7, 7), 5: (2, 4, 4, 4), 4: (2, 3, 3, 3),
     3: (1, 2, 2, 2), 2: (1, 1, 1, 1),
 }
 
