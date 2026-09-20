@@ -3021,3 +3021,25 @@ the session that has survived a repeat measurement.
 
 It also says the GPU was waiting on the host between passes above batch two,
 which is worth remembering when reading the deeper probe (3 / 6) now in flight.
+
+## Queue depth saturates at 4
+
+| tree | normalized |
+| --- | ---: |
+| trunk without it (`841a0d8` / control `4cc867f`) | 1123.4 / 1124.4 |
+| **lookahead 2/4 (`7eb8dd5` / `c8bf159`)** | **1134.0 / 1137.5** |
+| lookahead 3/6 (`e6784eb`) | 1123.6 |
+
+Going deeper is worse - 3/6 lands back at the no-change level. So
+`SPEC_LOOKAHEAD_WIDE = 4` is the knee, and the win is real but bounded.
+
+That run moved two constants at once again, which is the same mistake the
+pacing probes made: it cannot say whether the loss was the 6 above batch two or
+the 3 at batch one and two. `SPEC_LOOKAHEAD` has never been measured alone, so
+`718f7d2` changes only it, on the twice-measured `c8bf159` base. Its comment
+says the release pace never binds above batch two, which is why the two
+constants exist separately - at batch one and two it does bind, so a deeper
+queue there may be pointless or may still hide host latency behind the wait.
+
+**Standing rule, now earned twice: change one constant per run, even when two
+look like the same knob.**
