@@ -2125,3 +2125,44 @@ carrying a quarter of each layer's weight bytes. FP32 partial traffic rises
 
 Gates: unit tests, `archive ok`, 118/118 interpreter kernels, `SMOKE OK 83s`.
 Waiting on a free queue; all four are busy.
+
+## Both "safe, offline-proven" changes are regressions
+
+Result (fused lm_head argmax on by default, `0dbe286` / `f8b10df`): **1123.6 and
+1121.0** normalized, two draws agreeing to 0.2%, against the base's 1143.7.
+**DISCARD.** The mechanism is candidate 103's again: `fused_argmax` is a
+hand-rolled GEMM with an argmax epilogue, so taking it **bypasses the layout
+search entirely** - lm_head no longer gets the kind `_choose` picked for it.
+Saving a launch and a logit tensor does not pay for losing the tuned GEMM.
+
+Result (constexpr embedding width + incremental sibling mask, `854158d`):
+**1116.9** normalized, node -0.1%. **DISCARD.** Both halves were proven
+bit-identical offline and one of them provably cuts memory instructions 8x;
+they still lost 2.4% together.
+
+## Everything that changes anything has lost
+
+| change | normalized | vs base |
+| --- | ---: | ---: |
+| base (`c758faf`, `7928148`) | 1143.7, 1143.6 | - |
+| `num_stages` 2->3 | 1143.6 | 0.0% |
+| c106 speculate above 16 | 1139.8, 1140.9 | -0.3% |
+| fused argmax default | 1123.6, 1121.0 | -1.9% |
+| c102 mailbox NumPy view | 1122.4 | -1.9% |
+| c104 refine budget share | 1121.5, 1122.1 | -1.9% |
+| PTX economy bundle | 1116.9 | -2.4% |
+| c105 lead-in replay | 1114.4 | -2.6% |
+| c103 split-K 512->128 | 1094.6 | -4.3% |
+
+**The only two changes that did not lose are the two that effectively changed
+nothing**: `num_stages` 2->3 was measured neutral in its own right, and c106
+only affects shapes above 16 sequences, which the hidden set does not contain.
+Everything substantive has cost between 1.9% and 4.3%, and the losses cluster
+tightly around -2%.
+
+That clustering is itself the finding worth chasing. Nine changes in six
+different files, several proven bit-identical offline, do not all cost the same
+1.9% by coincidence. A base re-draw is now dispatched to Silver Bullet
+(`a227c54`, `engine/` byte-identical to `c758faf`) to test the alternative:
+that the platform has shifted under us since the two 1143.x draws and the whole
+comparison bar is stale.
