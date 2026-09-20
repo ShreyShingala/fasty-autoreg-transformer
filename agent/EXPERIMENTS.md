@@ -1977,3 +1977,44 @@ single-interval layouts ("split layouts keep the two-kernel path"), and it was
 parked on compile time against a 900 s cap. Cherry-pick attempted and aborted;
 the tree is clean. Revisit only with a fresh implementation against the current
 attention path, not by rebasing this commit.
+
+## Segfault took #1 with 1176.4
+
+Leaderboard: **Segfault 1176.4**, SSS 1144.3, dryfter 1138.7, Silver Bullet
+1137.7, zip 1071.1. They went 1064.4 -> 1176.4 in one step: +10.5%. That is not
+tuning, it is a structural change, and two candidate explanations fit the size.
+
+## Candidate 106 - speculate above 16 sequences (the best hypothesis)
+
+`block_candidates(batch)` returned `[]` for batch > 16, so `block_size` stayed
+1 and `self.speculative` was False. **Any workload with more than 16 sequences
+was decoding one token per pass** while every smaller shape got 1.3 to 1.8.
+Fixing one hidden workload of three by the ~28% that a two-token block returns
+(the offline traces put T2 at 1.283 tokens per pass) is 1.28^(1/3) = **+8.6%**
+on the geometric mean; if a run really scores six hidden workloads it is +4.2%.
+Either way it is the right order for what Segfault just did.
+
+The cap existed because a verify block above 16 sequences needs more than
+`MAX_ROWS = 32` rows, and candidate 68's 64-row Triton GEMM tiles blew the time
+limit. That reason does not apply: `linear` already sends anything above
+MAX_ROWS to cuBLAS, so **no new Triton GEMM shape is compiled**. 32 sequences
+at two tokens is 64 rows, an eighth of the 295-row roofline ridge, so the
+weights are still streamed once per pass exactly as at 32 rows.
+
+It cannot emit a wrong token. The verify pass writes the model's own argmax
+whatever was drafted, so a bad draft is rejected rather than accepted; the
+worst case is a slower pass, never a different one. That is why this was worth
+cancelling candidate 107's run for.
+
+Gates: unit tests, `archive ok`, whole-engine smoke over 24x20x6, 32x16x4 and
+1x32x16 with 0 mismatches. Pushed to SSS as `2cd0d19`; the sub-noise PTX bundle
+(`720efca`) was cancelled to free the slot.
+
+## Diagnostic on dryfter - 300 no-op nodes (`51863c3`)
+
+Prices one kernel boundary, which prices the whole fusion track before anyone
+writes a fusion. Compiled for cuda:90 the probe kernel is 0 shared bytes, 0
+`ld.global`, 0 `st.global`. At 0.65 us a node the pass grows 4.8%; at 2.9 us,
+21.6%. Segfault's +10.5% is close to the "144 removable small kernels = 10.4%
+of a batch-1 pass" estimate, so this reading now also tests whether fusion is
+what they did.
