@@ -2975,3 +2975,32 @@ DOWN before anything else goes up.
 `PACE_FLOOR_LONG` rather than `PACE_FLOOR`, and we know the scored set contains
 long-output workloads - so where the boundary sits decides which floor they
 get, and it has never been moved.
+
+## Some discards deserve a retest, because the bar was moving when they were taken
+
+The control method now works - the trunk and its contemporaneous control agree
+to 0.1% - and that casts doubt backwards. Several changes were discarded on
+~2% losses measured in a window where the bar itself fell ~2%:
+
+| discard | measured | taken at | worth retesting? |
+| --- | ---: | --- | --- |
+| PTX bundle (constexpr width + sibling mask) | 1116.9 | 00:36 | **yes** - provably fewer instructions |
+| c102 mailbox NumPy view | 1122.4 | 00:36 | maybe - host-side only |
+| c104 refine budget share | 1121.5 / 1122.1 | 23:46-23:53 | no - two draws agreed |
+| fused argmax default | 1123.6 / 1121.0 | 00:36 | no - two draws, and it bypasses the layout search |
+
+The comment-only tree scored 1113.0 at 01:00, so anything measured near then at
+~1120 was arguably at or above the bar of its moment.
+
+Candidate held: `a90cb58`, the **constexpr embedding width alone** - not the
+bundle. It is the one of these that is provable offline independent of any run:
+`_embed_rms_norm_kernel` read and wrote a row one 16-bit element at a time
+because its width was a runtime argument; as `tl.constexpr` the same body
+compiles to 8 `ld.global.v4` and 8 `st.global.v4` with no scalar access left.
+The incremental sibling mask that shared the original bundle is deliberately
+left out so this is one change.
+
+One trap avoided: the old bundle's shim file also predates the
+relaxed-acceptance machinery, so checking it out wholesale would have reverted
+`_first_best` and broken the tree. The rename was applied to the **trunk's**
+shim instead.
