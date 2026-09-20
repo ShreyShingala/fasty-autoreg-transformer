@@ -2259,3 +2259,24 @@ more programs rather than fewer.
 **So candidates 107 and 108 are the architecture's last untested levers of any
 size.** If both come back flat, the incremental line on this engine is finished
 and the honest move is to stop spending runs on it.
+
+## Relaxed acceptance is authorised
+
+2026-09-20: the user asked the organisers whether emitting a token that is not
+native's argmax but sits within the 2.0-logit margin is permitted, and they
+said yes. They did not confirm or deny that Segfault is doing it. This is the
+explicit ruling that was the precondition for building it; it was refused until
+now because `AGENTS.md` says the margin covers BF16 reordering and "does not
+admit approximations".
+
+**The margin is not 2.0 for us.** The judge replays our sequence teacher-forced
+after the engine is dead, and its logits are computed in a different order from
+the verify pass's: `AGENTS.md` records native's own tokens sitting **up to 0.75
+logits** below the replay's argmax purely from BF16 accumulation order. So an
+acceptance at gap g is checked at up to g + 0.75. Accepting at 2.0 fails.
+
+One wrong position fails the workload and takes the run with it, and a
+generation covers thousands of positions, so the margin is a budget to spend
+carefully: `ACCEPT_MARGIN` is the gap we accept at, and 2.0 - ACCEPT_MARGIN is
+the headroom left for reordering noise. Two values go out at once to measure
+the curve before trusting either.
