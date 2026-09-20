@@ -31,16 +31,9 @@ ACCEPT_MARGIN = float(__import__('os').environ.get('FASTY_ACCEPT_MARGIN', 1.0))
 #: size; the rest of a block are alternatives to draft 1. Fitted offline on the
 #: model's greedy text (192 samples, six corpora): 1.4-3.6% fewer passes than
 #: the best fixed split at every size.
-#: Chain depth by matched-suffix length, per block size. Fitted under EXACT
-#: acceptance, where a link stood only if it WAS the argmax, so depth past the
-#: usual first miss was wasted verify width and the fit pushed it back into
-#: siblings. A margin moves that optimum out: each link now stands far more
-#: often, so a longer chain pays where it did not, and the sibling slots that
-#: insured against an early miss are worth less. Warmup still measures the
-#: block sizes against each other and keeps the faster.
 DRAFTS_BY_MATCH = {
-    16: (8, 12, 15, 15), 8: (4, 6, 7, 7), 5: (2, 4, 4, 4), 4: (2, 3, 3, 3),
-    3: (1, 2, 2, 2), 2: (1, 1, 1, 1),
+    32: (10, 16, 27, 29), 16: (5, 8, 13, 14), 8: (2, 4, 6, 7), 5: (2, 3, 4, 4),
+    4: (1, 2, 3, 3), 3: (1, 2, 2, 2), 2: (1, 1, 1, 1),
 }
 
 
@@ -56,7 +49,7 @@ DRAFTS_BY_MATCH = {
 #: lower on the hidden shapes with the public ones unchanged: reverted.)
 EXPECTED_PASSES = {
     2: (0.897, 0.854), 3: (0.869, 0.814), 4: (0.846, 0.794), 5: (0.832, 0.777),
-    8: (0.805, 0.749), 16: (0.779, 0.718),
+    8: (0.805, 0.749), 16: (0.779, 0.718), 32: (0.762, 0.697),
 }
 
 
@@ -80,7 +73,14 @@ def block_candidates(batch):
         fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
         if max(fitting) not in sizes:
             sizes.append(max(fitting))
-    return sizes if batch > 1 else sizes[:1]
+    # Batch one used to take only the first size. A 32-token block is 32 rows,
+    # still inside MAX_ROWS, so the tuned Triton projections apply and the
+    # weights are streamed once either way -- the pass costs almost the same
+    # and verifies twice as many drafts. It lost under exact acceptance, where
+    # the extra slots mostly went unaccepted; with a margin they do not, and
+    # warmup scores both sizes by measured pass time x expected passes and
+    # keeps the cheaper, so offering it cannot be worse than not offering it.
+    return sizes
 
 
 #: Verify passes queued behind the GPU.
