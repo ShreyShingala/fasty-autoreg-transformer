@@ -1,7 +1,10 @@
 # Handoff — Dryft Kernel Rush, team SSS (for GPT Astra)
 
 You are taking over an inference-engine optimisation loop that is currently
-**#1 on the leaderboard**. Everything below is fact as of 2026-09-19 20:45 UTC.
+**#2 on the leaderboard**, 4.8% behind Segfault. Everything below is fact as of
+2026-09-20 01:00 UTC. The three queues we still use are SSS, dryfter and
+0xDeadBeaf; Silver Bullet has been handed to another agent building a new
+architecture from scratch, so do not dispatch to it.
 
 ## The task
 
