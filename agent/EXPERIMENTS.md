@@ -2490,3 +2490,28 @@ their acceptance out. So **0.58 is well outside the calibrated range and may
 come back `unstable_timing`**. That is an acceptable probe - a failed run does
 not replace a team's best - but it is a probe, not a candidate, and the thesis
 that relaxed acceptance tightens the distribution is what it is testing.
+
+## Candidate 112 - a 32-token verify block at batch one (held, `1cfe4a0`)
+
+`block_candidates` returned `sizes[:1]` for batch one, so a single sequence has
+never measured anything but a 16-token block. At batch one a 32-token block is
+32 rows, still inside `MAX_ROWS`, so the tuned Triton projections still apply
+and the weights are streamed once either way: **the pass costs almost the same
+and verifies twice as many drafts**.
+
+Larger blocks at batch one are on the dead list (c26, c30, d14ca21) - measured
+under exact acceptance, where the extra slots mostly went unaccepted. That
+regime is gone, which is the whole point of refitting the draft side now.
+Warmup scores both sizes by measured pass time x expected passes and keeps the
+cheaper, so offering the size cannot be worse than not offering it; the cost is
+warmup, not score.
+
+`DRAFTS_BY_MATCH[32] = (10, 16, 27, 29)`, `EXPECTED_PASSES[32] = (0.762,
+0.697)` extrapolated from the 8->16 step. Gates: unit tests, archive ok,
+`SMOKE OK 108s`, block=32 selected in 4 of 12 generations, worst teacher-forced
+gap 0.375.
+
+**The risk is the cap, not correctness.** The smoke run went 85 s -> 108 s
+because a second block size is prepared and captured; six workloads pay that,
+and runs already sit at 650-780 s against a limit that has cancelled two. A
+cancellation near 900 s would mean the change is right and the budget is not.
