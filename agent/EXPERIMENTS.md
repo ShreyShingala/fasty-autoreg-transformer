@@ -2515,3 +2515,24 @@ gap 0.375.
 because a second block size is prepared and captured; six workloads pay that,
 and runs already sit at 650-780 s against a limit that has cancelled two. A
 cancellation near 900 s would mean the change is right and the budget is not.
+
+## Candidate 111 - deeper chains for the relaxed regime: DISCARD
+
+`63c5fd0`: **1106.1 raw, 1119.8 normalized, node +1.2%, 772 s.** Against the
+contemporaneous control (`ebcf59d`, 1131.4, 768 s) that is **-1.0%**, and it
+ran 120 s longer than the margin-1.0 tree's 652 s.
+
+So the reasoning was wrong in a useful way. I argued that a margin makes each
+chain link stand more often, so depth should move out and the sibling slots
+that insure against an early miss are worth less. The measurement says the
+opposite: taking 16-block depths from (5, 8, 13, 14) to (8, 12, 15, 15) made
+the run **slower**, which means the slots moved out of siblings were earning
+more there than they earn on the chain, margin or no margin.
+
+**The chain/sibling split was NOT invalidated by relaxed acceptance.** That
+narrows the claim that "every draft dead end was measured in the wrong regime":
+the split, at least, was already right. Reverted to (5, 8, 13, 14).
+
+What is still genuinely untested in the new regime is the *width* of the
+block, which is candidate 112, because that trades pass cost against draft
+count rather than reallocating a fixed number of slots.
