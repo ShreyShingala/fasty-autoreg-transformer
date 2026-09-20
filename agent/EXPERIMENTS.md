@@ -2880,3 +2880,32 @@ not the path; it stays disabled.
 
 **Redirect: prefill.** With the draft side closed and the kernels finished,
 that is the only untouched lever of any size left.
+
+## Prefill, sized honestly before building anything
+
+At 8192 prompt tokens (public-1 and public-2):
+
+| component | bytes or FLOP | time |
+| --- | ---: | ---: |
+| GEMM | 59.5 TFLOP | 60.2 ms at the 989 TF/s paper peak, **85.0 ms at a realistic cuBLAS 700** |
+| activation traffic | 620.8 MB a layer, 22.3 GB total | 6.7 ms at peak |
+| **plausible floor** | | **~92 ms** |
+| **observed TTFT** | | **120.4 ms** |
+
+So about **29 ms is available**, not the 60 ms the naive roofline suggests -
+we already run prefill ~1.9x faster than native, which is where the easy part
+went. 29 ms is 12.1% of the public-1 sample and about **+4.4% on a three-shape
+geomean**, which matches the +4.0% the lever table guessed.
+
+Per layer the activations are dominated by the gate_up output,
+`[8192, 19456]` BF16 = 318.8 MB, written by cuBLAS and read straight back by
+`swiglu`. At 8192 rows that round trip cannot hit L2 (50 MB), but **chunking
+the prefill MLP to ~1024 rows makes the intermediate 40 MB and it does**. That
+is worth ~11.5 GB of HBM traffic across the model, about 3.4 ms, and it is the
+one prefill change that is a loop bound rather than a new kernel.
+
+Ranking what is left, honestly: the draft side is closed (+3.1% oracle, and the
+margin only reaches the 9.9% of draft-1 misses that are near-ties), the kernels
+are finished, pacing is nearly exhausted at +0.6% banked. Prefill's ~4.4% is
+now the largest single item, and it is not enough on its own for the 12% gap -
+which is the honest state of things rather than a reason not to take it.
