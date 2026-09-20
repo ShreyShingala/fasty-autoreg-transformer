@@ -2659,3 +2659,26 @@ Note the asymmetry worth remembering: **short outputs wanted the floor lower,
 long outputs want it higher.** A single constant for both was always going to
 be wrong for one of them, which is why the first two pacing runs read as null
 and negative.
+
+## There are two pacing throttles, and only one has ever been tuned
+
+    pace_seconds = max(pace_floor() * pass_seconds,
+                       PACE_MEDIAN * median(this process's unpaced speeds))
+
+The floor runs expose the second clamp changing hands:
+
+| short floor | predicted TPOT (floor x pass) | observed | what set the rate |
+| ---: | ---: | ---: | --- |
+| 0.65 | 2.691 | **2.691** | the floor |
+| 0.58 | 2.401 | **3.111** | `PACE_MEDIAN`, at ~3.11 ms |
+
+So floor 0.58 was never slower because 0.58 is too aggressive - below about
+0.65 the floor stops being the binding constraint and `PACE_MEDIAN x median`
+takes over at a higher number. **Every conclusion about "how low the floor can
+go" was really locating this constant**, and at 0.88 it has never been touched.
+
+Candidate held: `e331ce7`, `PACE_MEDIAN` 0.88 -> 0.80 on the measured
+short-0.65 tree (`233924f`, 1138.0). It does the same spread-gate job the floor
+does - stopping one fast generation running away from the rest - and the gate
+has had room at every floor tried. If it pays, the floor becomes worth
+revisiting below 0.65, because the two interact and only their maximum matters.
