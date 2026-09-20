@@ -77,11 +77,28 @@ def _block_argmax(grid, logits, best_value, best_index, VOCAB, BLOCKS, BLOCK, **
 
 
 @reference("_first_best")
-def _first_best(grid, best_value, best_index, out, BLOCKS, BLOCK_B, **launch):
+def _first_best(grid, best_value, best_index, out, top, BLOCKS, BLOCK_B, TOP, **launch):
     assert BLOCK_B >= BLOCKS
     rows = grid[0]
-    chosen = flat(best_value, rows * BLOCKS).view(rows, BLOCKS).argmax(-1)
+    values = flat(best_value, rows * BLOCKS).view(rows, BLOCKS)
+    chosen = values.argmax(-1)
     flat(out, rows).copy_(flat(best_index, rows * BLOCKS).view(rows, BLOCKS).gather(1, chosen[:, None])[:, 0])
+    if TOP:
+        flat(top, rows).copy_(values.gather(1, chosen[:, None])[:, 0])
+
+
+@reference("_within_margin")
+def _within_margin(grid, logits, tokens, top, within, TOKENS, VOCAB, MARGIN, BLOCK, **launch):
+    """Is chain draft `slot` within MARGIN logits of the argmax at slot - 1?"""
+    rows = grid[0]
+    ids = flat(tokens, rows * TOKENS).view(rows, TOKENS)
+    best = flat(top, rows * TOKENS).view(rows, TOKENS)
+    table = flat(logits, rows * TOKENS * VOCAB).view(rows, TOKENS, VOCAB).to(F32)
+    out = flat(within, rows * TOKENS).view(rows, TOKENS)
+    for row in range(rows):
+        for slot in range(1, TOKENS):
+            value = table[row, slot - 1, int(ids[row, slot])]
+            out[row, slot] = int(value >= best[row, slot - 1] - MARGIN)
 
 
 @reference("_fused_block_argmax")
@@ -101,16 +118,16 @@ def _fused_block_argmax(grid, x_ptr, weight_ptr, best_value, best_index, M, N, K
 
 
 @reference("_embed_rms_norm_kernel")
-def _embed_rms_norm_kernel(grid, ids_ptr, table_ptr, w_ptr, y_ptr, h_ptr, WIDTH, eps, BLOCK, **launch):
+def _embed_rms_norm_kernel(grid, ids_ptr, table_ptr, w_ptr, y_ptr, h_ptr, n_cols, eps, BLOCK, **launch):
     rows = grid[0]
     ids = flat(ids_ptr, rows).to(torch.int64)
-    table = flat(table_ptr, (int(ids.max()) + 1) * WIDTH).view(-1, WIDTH)
+    table = flat(table_ptr, (int(ids.max()) + 1) * n_cols).view(-1, n_cols)
     raw = table[ids]
-    flat(h_ptr, rows * WIDTH).view(rows, WIDTH).copy_(raw)
+    flat(h_ptr, rows * n_cols).view(rows, n_cols).copy_(raw)
     x = raw.to(F32)
     normed = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    weight = flat(w_ptr, WIDTH)
-    flat(y_ptr, rows * WIDTH).view(rows, WIDTH).copy_(normed.to(BF16) * weight)
+    weight = flat(w_ptr, n_cols)
+    flat(y_ptr, rows * n_cols).view(rows, n_cols).copy_(normed.to(BF16) * weight)
 
 
 @reference("_swiglu")
@@ -464,14 +481,20 @@ def _propose_ranked(
 
 
 @reference("_settle")
-def _settle(grid, tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale, SIZE, TOKENS, BLOCK, **launch):
+def _settle(grid, tokens, greedy, within, position, limit, history, result, move_from, move_to, chains, stale, SIZE, TOKENS, BLOCK, RELAXED, **launch):
     assert BLOCK >= TOKENS
     for row in range(grid[0]):
         CHAIN = int(flat(chains)[row])
         draft = flat(tokens, (row + 1) * TOKENS)[row * TOKENS:].tolist()
         chosen = flat(greedy, (row + 1) * TOKENS)[row * TOKENS:].tolist()
-        miss = [slot if (1 <= slot < CHAIN and draft[slot] != chosen[slot - 1]) else CHAIN for slot in range(TOKENS)]
+        if RELAXED:
+            flags = flat(within, (row + 1) * TOKENS)[row * TOKENS:].tolist()
+            legal = [bool(flags[slot]) for slot in range(TOKENS)]
+        else:
+            legal = [slot >= 1 and draft[slot] == chosen[slot - 1] for slot in range(TOKENS)]
+        miss = [slot if (1 <= slot < CHAIN and not legal[slot]) else CHAIN for slot in range(TOKENS)]
         gained = min(miss)
+        accepted = gained
         wanted = chosen[0]
         hit = min([slot if (slot >= CHAIN and draft[slot] == wanted) else TOKENS for slot in range(TOKENS)])
         place = int(flat(position)[row])
@@ -480,7 +503,11 @@ def _settle(grid, tokens, greedy, position, limit, history, result, move_from, m
         flat(stale)[row] = chosen[min(gained, TOKENS - 1)] if (gained < CHAIN and not branch) else -1
         gained = min(2 if branch else gained, room)
         bonus = chosen[min(hit, TOKENS - 1)]
-        emitted = [bonus if (branch and slot == 1) else chosen[slot] for slot in range(TOKENS)]
+        # What was in context is what is emitted: the next slot's draft for every
+        # accepted chain position, the model's own choice only at the end.
+        emitted = [draft[slot + 1] if (slot + 1 < accepted and slot + 1 < TOKENS) else chosen[slot]
+                   for slot in range(TOKENS)]
+        emitted = [bonus if (branch and slot == 1) else emitted[slot] for slot in range(TOKENS)]
         out = flat(result, (row + 1) * (TOKENS + 1))[row * (TOKENS + 1):]
         out[0] = gained
         out[1:] = torch.tensor(emitted)

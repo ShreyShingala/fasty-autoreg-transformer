@@ -125,9 +125,51 @@ def propose(history, position, tokens_per_row, drafts_by_match, successor, stale
 
 
 @triton.jit
+def _within_margin(
+    logits, tokens, top, within,
+    TOKENS: tl.constexpr, VOCAB: tl.constexpr, MARGIN: tl.constexpr, BLOCK: tl.constexpr,
+):
+    """Which chain drafts are legal emissions: within MARGIN logits of the argmax.
+
+    Draft ``slot`` is read in the context that produced the logits at slot - 1,
+    so it is judged against those: accepted when its own logit is no more than
+    MARGIN below that row's winning logit. MARGIN 0 reduces to "is an argmax".
+
+    The judge replays the emitted sequence teacher-forced and allows 2.0, but
+    its logits are accumulated in a different order from this pass's, worth up
+    to 0.75 by the contract's own calibration, so MARGIN is deliberately well
+    under 2.0 and the remainder is the headroom for that reordering.
+    """
+    pdl_wait()  # before any global memory access
+    row = tl.program_id(0).to(tl.int64)
+    slot = tl.arange(0, BLOCK).to(tl.int64)
+    inside = (slot >= 1) & (slot < TOKENS)
+    draft = tl.load(tokens + row * TOKENS + slot, inside, other=0)
+    previous = row * TOKENS + slot - 1
+    value = tl.load(logits + previous * VOCAB + draft, inside, other=float("-inf")).to(tl.float32)
+    best = tl.load(top + previous, inside, other=0.0)
+    tl.store(within + row * TOKENS + slot, (value >= best - MARGIN).to(tl.int64), inside)
+
+
+def within_margin(logits, tokens, top, margin):
+    """int64 [batch, TOKENS] flags: is chain draft ``slot`` a legal emission?"""
+    batch, count = tokens.shape
+    vocab = logits.shape[-1]
+    assert logits.is_contiguous() and tokens.is_contiguous() and top.is_contiguous()
+    assert logits.numel() // vocab == batch * count and top.numel() == batch * count
+    within = torch.empty_like(tokens)
+    _within_margin[(batch,)](
+        logits, tokens, top, within,
+        TOKENS=count, VOCAB=vocab, MARGIN=float(margin),
+        BLOCK=triton.next_power_of_2(count), num_warps=1,
+    )
+    return within
+
+
+@triton.jit
 def _settle(
-    tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale,
-    SIZE: tl.constexpr, TOKENS: tl.constexpr, BLOCK: tl.constexpr,
+    tokens, greedy, within, position, limit, history, result, move_from, move_to, chains, stale,
+    SIZE: tl.constexpr, TOKENS: tl.constexpr, BLOCK: tl.constexpr, RELAXED: tl.constexpr,
 ):
     pdl_wait()  # before any global memory access
     row = tl.program_id(0).to(tl.int64)
@@ -137,10 +179,17 @@ def _settle(
     draft = tl.load(tokens + row * TOKENS + slot, inside, other=0)
     chosen = tl.load(greedy + row * TOKENS + slot, inside, other=0)
     expected = tl.load(greedy + row * TOKENS + slot - 1, inside & (slot >= 1), other=0)
-    # Chain draft ``slot`` stands only if it equals the model's choice after
-    # the tokens before it; the first miss ends the run. Gained = kept + 1.
-    miss = tl.where(inside & (slot >= 1) & (slot < CHAIN) & (draft != expected), slot, CHAIN)
+    # Chain draft ``slot`` stands only if it is a legal emission in the context
+    # before it; the first miss ends the run. Gained = kept + 1. Exactly, that
+    # means equal to the model's choice there; under RELAXED it means within
+    # the acceptance margin of it, which ``_within_margin`` has already decided.
+    if RELAXED:
+        legal = tl.load(within + row * TOKENS + slot, inside & (slot >= 1), other=0) != 0
+    else:
+        legal = draft == expected
+    miss = tl.where(inside & (slot >= 1) & (slot < CHAIN) & (legal == 0), slot, CHAIN)
     gained = tl.min(miss, axis=0)
+    accepted = gained
     # If draft 1 missed, an alternative equal to the model's first choice is
     # kept instead; the model's choice after it is the second gained token.
     wanted = tl.load(greedy + row * TOKENS)
@@ -154,7 +203,17 @@ def _settle(
     tl.store(stale + row, tl.where((gained < CHAIN) & (branch == 0), guess, -1))
     gained = tl.minimum(tl.where(branch, 2, gained), room)
     bonus = tl.load(greedy + row * TOKENS + tl.minimum(hit, TOKENS - 1))
-    emitted = tl.where(branch & (slot == 1), bonus, chosen)
+    # What was actually in context is what must be emitted. For every accepted
+    # chain position the next slot's draft is that token, and the model's own
+    # choice only takes the last place. Exactly, the two are the same token and
+    # this is a no-op; under RELAXED the accepted draft differs from the argmax
+    # and emitting the argmax instead would describe a prefix the later logits
+    # were never computed from. ``accepted`` is the chain length before the
+    # sibling branch rewrites it, so the branch path still falls through to
+    # ``chosen`` and its own override below.
+    following = tl.load(tokens + row * TOKENS + slot + 1, inside & (slot + 1 < TOKENS), other=0)
+    emitted = tl.where(inside & (slot + 1 < accepted), following, chosen)
+    emitted = tl.where(branch & (slot == 1), bonus, emitted)
     tl.store(result + row * (TOKENS + 1), gained)
     tl.store(result + row * (TOKENS + 1) + 1 + slot, emitted, inside)
     # Entries past ``gained`` are rewritten by the next pass before any read.
@@ -165,7 +224,7 @@ def _settle(
     tl.store(position + row, place + gained)
 
 
-def settle(tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale):
+def settle(tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale, within=None):
     """Accept, clamp at ``limit``, record emitted tokens, plan the KV move, advance; in place."""
     batch, count = tokens.shape
     assert tokens.is_contiguous() and greedy.is_contiguous() and history.is_contiguous() and result.is_contiguous()
@@ -174,8 +233,10 @@ def settle(tokens, greedy, position, limit, history, result, move_from, move_to,
     assert move_from.dtype == move_to.dtype == torch.int64 and move_from.shape == move_to.shape == (batch,)
     assert stale.shape == (batch,) and stale.dtype == torch.int64
     _settle[(batch,)](
-        tokens, greedy, position, limit, history, result, move_from, move_to, chains, stale,
-        SIZE=history.shape[1], TOKENS=count, BLOCK=triton.next_power_of_2(count), num_warps=1,
+        tokens, greedy, within if within is not None else tokens,
+        position, limit, history, result, move_from, move_to, chains, stale,
+        SIZE=history.shape[1], TOKENS=count, BLOCK=triton.next_power_of_2(count),
+        RELAXED=within is not None, num_warps=1,
     )
 
 

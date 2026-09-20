@@ -33,19 +33,26 @@ def _block_argmax(
 
 @triton.jit
 def _first_best(
-    best_value, best_index, out,
-    BLOCKS: tl.constexpr, BLOCK_B: tl.constexpr,
+    best_value, best_index, out, top,
+    BLOCKS: tl.constexpr, BLOCK_B: tl.constexpr, TOP: tl.constexpr,
 ):
     pdl_wait()  # before any global memory access
     row = tl.program_id(0).to(tl.int64)
     blocks = tl.arange(0, BLOCK_B)
     values = tl.load(best_value + row * BLOCKS + blocks, blocks < BLOCKS, other=float("-inf"))
-    _, chosen = tl.max(values, axis=0, return_indices=True, return_indices_tie_break_left=True)
+    value, chosen = tl.max(values, axis=0, return_indices=True, return_indices_tie_break_left=True)
     tl.store(out + row, tl.load(best_index + row * BLOCKS + chosen))
+    if TOP:
+        # The winning logit itself. Relaxed acceptance compares a drafted
+        # token's logit against this; the reduction already has it.
+        tl.store(top + row, value)
 
 
-def argmax(logits, block=8192):
-    """int64 argmax over the last dimension of BF16 logits [..., V]."""
+def argmax(logits, block=8192, top=None):
+    """int64 argmax over the last dimension of BF16 logits [..., V].
+
+    With ``top``, also writes each row's winning logit there as FP32.
+    """
     if logits.dtype != torch.bfloat16:
         return logits.argmax(dim=-1)
     logits = logits.contiguous()
@@ -56,7 +63,10 @@ def argmax(logits, block=8192):
     best_index = torch.empty((rows, blocks), dtype=torch.int64, device=logits.device)
     out = torch.empty(logits.shape[:-1], dtype=torch.int64, device=logits.device)
     _block_argmax[(rows, blocks)](logits, best_value, best_index, VOCAB=vocab, BLOCKS=blocks, BLOCK=block, num_warps=4)
-    _first_best[(rows,)](best_value, best_index, out, BLOCKS=blocks, BLOCK_B=triton.next_power_of_2(blocks), num_warps=1)
+    _first_best[(rows,)](
+        best_value, best_index, out, top if top is not None else best_value,
+        BLOCKS=blocks, BLOCK_B=triton.next_power_of_2(blocks), TOP=top is not None, num_warps=1,
+    )
     return out
 
 
@@ -119,13 +129,20 @@ def fused_argmax(x, weight, block_n=64, block_k=128):
     return out
 
 
-def greedy_tokens(x, weight, linear):
+def greedy_tokens(x, weight, linear, top=None):
     """Greedy token per row of x @ weight.T: the fused kernel where the captured pass prefers it, else project + argmax.
 
     The fused path is offered to ``DecodeState.refine`` as a knob (default off)
-    once it agrees with the projection path on the row count in use.
+    once it agrees with the projection path on the row count in use. With
+    ``top`` the caller also wants each row's winning logit and the logits
+    themselves, so the projection path is taken and ``(ids, logits)`` returned.
     """
     rows = x.shape[0] * (x.shape[1] if x.dim() == 3 else 1)
+    if top is not None:
+        # Relaxed acceptance needs the logits themselves, to read the drafted
+        # token's value; the fused kernel never writes them.
+        logits = linear(x, weight)
+        return argmax(logits, top=top), logits
     key = (x.device, rows, weight.shape[0], weight.shape[1])
     if key not in _FUSED:
         _FUSED[key] = False
