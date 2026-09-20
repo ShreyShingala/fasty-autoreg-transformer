@@ -2743,3 +2743,33 @@ Things checked and already in place, so not levers: prefill attention already
 uses the Flash SDPA backend with GQA (`attention.py`), the prompt is already a
 draft source (`history[:, :length].copy_(prompt_ids)`), and the lm_head already
 runs last-token-only during prefill.
+
+## Every pacing path routes through PACE_MEDIAN
+
+Evaluating `pace_floor()` per public shape with the trunk constants
+(PACE_FLOOR 0.65, PACE_FLOOR_LONG 0.60, PACE_FLOOR_MIN 0.58, WORST_PASSES 0.90):
+
+| shape | floor | where it comes from | floor x pass | median clamp |
+| --- | ---: | --- | ---: | ---: |
+| public-0, 1x512->32 | 0.650 | formula gives 0.703, capped by PACE_FLOOR | 2.69 ms | 2.37 ms |
+| public-1, 4x2048->32 | 0.586 | the long-prompt formula, just above MIN | 3.40 ms | 3.32 ms |
+| public-2, 16x512->128 | 0.600 | PACE_FLOOR_LONG | 3.84 ms | 3.67 ms |
+
+Two things this settles. **A long prompt already earns a lower floor
+automatically** - public-1 gets 0.586 rather than 0.65 because of the
+`- 0.25 * prefill_seconds` term - so there is no separate long-prompt lever to
+find. And every shape currently sits just above its median clamp, so **pushing
+any floor further immediately hands control to PACE_MEDIAN**.
+
+Chasing it through the other constants confirms it. `WORST_PASSES` 0.90 -> 0.85
+would take public-1's floor to 0.474, which `PACE_FLOOR_MIN` then clamps to
+0.58; drop MIN to 0.50 as well and the floor reaches 0.50, worth 2.90 ms - but
+the median clamp sits at 3.32 ms, so it binds and nothing moves. **Three
+different constants all dead-end at the same place.**
+
+So `PACE_MEDIAN` is not one lever among several, it is the gate on all of them,
+and the two runs in flight (0.80 on the trunk, 0.72 on 0xDeadBeaf) decide
+whether the whole pacing track has anything left. If 0.72 pays, the follow-up
+is not another floor probe but `PACE_MEDIAN` lower still, with `WORST_PASSES`
+and `PACE_FLOOR_MIN` dropped together so long-prompt shapes can actually reach
+it.
