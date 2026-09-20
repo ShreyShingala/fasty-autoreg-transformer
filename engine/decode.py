@@ -25,7 +25,7 @@ from kernels import spec
 #: worth up to 0.75 by the contract's own calibration - so what is left of the
 #: 2.0 after this is the headroom for that reordering. 0.0 restores exact
 #: greedy decoding. Authorised by the organisers on 2026-09-20.
-ACCEPT_MARGIN = float(__import__('os').environ.get('FASTY_ACCEPT_MARGIN', 1.0))
+ACCEPT_MARGIN = float(__import__('os').environ.get('FASTY_ACCEPT_MARGIN', 0.0))
 
 #: Chain drafts by matched-suffix length (0-1 / 2-3 / 4-7 / 8+) for each block
 #: size; the rest of a block are alternatives to draft 1. Fitted offline on the
