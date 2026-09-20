@@ -3004,3 +3004,20 @@ One trap avoided: the old bundle's shim file also predates the
 relaxed-acceptance machinery, so checking it out wholesale would have reverted
 `_first_best` and broken the tree. The rename was applied to the **trunk's**
 shim instead.
+
+## Lookahead 4 confirmed on a second draw
+
+| tree | normalized | duration |
+| --- | ---: | ---: |
+| `841a0d8` trunk WITHOUT lookahead 4 | 1123.4 | 788 s |
+| control of that trunk `4cc867f` | 1124.4 | 813 s |
+| `7eb8dd5` lookahead 4, first draw | 1134.0 | 810 s |
+| **`c8bf159` lookahead 4, second draw** | **1137.5** | 752 s |
+
+Two draws of the lookahead tree agree within 0.3%, and two draws of the trunk
+without it agree within 0.1%. **`SPEC_LOOKAHEAD_WIDE` 3 -> 4 is worth +1.0 to
++1.25%**, reproduced, and it cannot change a token. This is the only lever of
+the session that has survived a repeat measurement.
+
+It also says the GPU was waiting on the host between passes above batch two,
+which is worth remembering when reading the deeper probe (3 / 6) now in flight.
