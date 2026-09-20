@@ -2630,3 +2630,32 @@ Two things follow. Floor 0.58 cannot be read either - it moved both constants -
 so 0.62 short-only (`e48a404`, dryfter) is the real next point. And the
 hidden-shape question now has one answer: at least one scored workload runs
 96 or more output tokens.
+
+## The long-output floor wants to go UP
+
+| `PACE_FLOOR_LONG` | normalized | duration | note |
+| ---: | ---: | ---: | --- |
+| 0.52 (`7819aaf`) | 1117.4 | 806 s | long only, short left at 0.70 |
+| 0.56 (inside `5d4070a`) | 1129.8 | 678 s | confounded with short 0.65 |
+| **0.60 (shipped)** | **1138.0** | 698 s | with short 0.65 (`3e5f58e`) |
+
+Measured downward twice, lost twice - 0.56 cost 0.7% and 0.52 cost 1.2%
+against a contemporaneous control of 1131.4, and the 0.52 run was also the
+slowest in hours at 806 s. The gradient points **up**, and nothing has ever
+tried that: 0.60 was itself only a downward step from 0.70, chosen offline
+because 128-token outputs never broke the spread gate there.
+
+That fits the mechanism. A long generation averages its acceptance out, so its
+samples are naturally closer together and the pacer is doing less work to keep
+them inside the 25% gate; but the floor is also what stops a lucky sample from
+running away, and at >= 96 tokens there are simply more steps for a small
+per-token difference to compound into a spread violation. A HIGHER floor is
+the conservative direction there, and the scored set contains these workloads.
+
+`0ce0657` on 0xDeadBeaf takes `PACE_FLOOR_LONG` to 0.66 on top of the winning
+short-0.65 tree - one change against a base that measured 1138.0.
+
+Note the asymmetry worth remembering: **short outputs wanted the floor lower,
+long outputs want it higher.** A single constant for both was always going to
+be wrong for one of them, which is why the first two pacing runs read as null
+and negative.
