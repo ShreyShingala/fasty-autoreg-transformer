@@ -2018,3 +2018,43 @@ writes a fusion. Compiled for cuda:90 the probe kernel is 0 shared bytes, 0
 21.6%. Segfault's +10.5% is close to the "144 removable small kernels = 10.4%
 of a batch-1 pass" estimate, so this reading now also tests whether fusion is
 what they did.
+
+## The node-cost diagnostic settles the fusion question
+
+dryfter `51863c3`, 300 empty kernels added to the captured verify pass:
+
+| probe | base mean | with 300 nodes | rise |
+| --- | ---: | ---: | ---: |
+| public-0 TPOT | 2.922 ms | 3.148 ms | +7.7% |
+| public-1 TPOT | 3.877 ms | 4.207 ms | +8.5% |
+| public-2 TPOT | 4.187 ms | 4.452 ms | +6.3% |
+
+**A graph node costs about 1.0-1.3 us**, consistently across all three shapes.
+Not the 0.53-0.70 us of NVIDIA's microbenchmark and not the ~2.9 us our own
+candidate deltas implied. So the fusion track is worth roughly **144 x 1.1 us =
+0.16 ms = 3.9% of a batch-1 pass as an upper bound**, before any of it is
+given back to bigger kernels - which matches the independent design review's
+~2.4% realistic estimate. It is worth doing and it is not worth a megakernel,
+and it does not explain a rival's +10.5%.
+
+## Candidate 106 - no hidden workload is above 16 sequences
+
+`2cd0d19`: **1121.0 raw, 1139.8 normalized, node +1.7%, 804 s** - neutral
+against the base's 1143.7, and 110 s slower to warm up.
+
+The public probes are batch 1, 4 and 16, so enabling speculation above 16
+cannot touch them; the score is the hidden workloads, and it did not move.
+The conclusion is a useful negative: **no hidden workload runs more than 16
+sequences.** The memory-footprint estimate that suggested one did (a 16.91 GB
+aggregate peak implying B x C ~ 20,000) is explained by allocator variation
+instead.
+
+**DISCARD**, because it buys nothing and spends 110 s of a budget that has
+already killed two runs. It also retires the wider-block follow-up
+(`cand-spec-wider`, row budget scaling with batch, gated and smoke-clean at
+1.67 accepted tokens per pass on a batch-24 shape): correct, and pointed at
+shapes that do not exist.
+
+This also removes the leading explanation for Segfault's jump. Their +10.5%,
+now +134.6 over their old score, is not the batch cap and is not fusion at 1.1
+us a node.

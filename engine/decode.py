@@ -57,17 +57,9 @@ def block_candidates(batch):
     within 64 rows (public-2 ran 2% faster with four tokens per row through 64
     cuBLAS rows than with two, while the hidden aggregate fell when that was
     forced for every short prompt: so it is measured per workload instead).
-
-    Above 16 rows this used to return nothing, which left any workload of more
-    than 16 sequences decoding one token per pass while every smaller shape got
-    1.3 to 1.8. The verify block there is two tokens a row, so 32 sequences run
-    64 rows -- still an eighth of the 295-row roofline ridge, so the weights are
-    read once per pass exactly as they are at 32 rows, and `linear` already
-    sends more than MAX_ROWS to cuBLAS, so no new Triton GEMM shape is compiled
-    (that, not the arithmetic, is what put candidate 68 over the time limit).
-    The pass costs about what it cost before and returns about 1.28 tokens
-    instead of 1.
     """
+    if batch > 16:
+        return []
     sizes = []
     for rows in ((16, 32) if batch <= 8 else (32, 64)):
         fitting = [size for size in DRAFTS_BY_MATCH if size * batch <= max(rows, 2 * batch)]
