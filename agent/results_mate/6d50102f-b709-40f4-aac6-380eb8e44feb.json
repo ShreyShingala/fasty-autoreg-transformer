@@ -1,0 +1,23 @@
+{
+ "id": "6d50102f-b709-40f4-aac6-380eb8e44feb",
+ "submissionId": "396058b8-3ff2-4e4e-b9a0-f13ef62c8e4f",
+ "teamId": "a50f29a6-5f0e-4696-bd9f-992175975248",
+ "challenge": "decode",
+ "mode": "official",
+ "state": "canceled",
+ "priority": 10,
+ "attempt": 0,
+ "maxAttempts": 3,
+ "submissionDigest": "74cdfbcb60816ad6484683ec4123732566bcda6d690c7b4ca91790ac19481c6b",
+ "challengeSpecDigest": "b103e41b682f2e7c1dead713db0a4d104d0045b53162efdd7b4039fd51562ee0",
+ "runtime": "triton-cu124-py311",
+ "commitSha": "ae73f836ecbec9b28e50b7668936803f982ce34b",
+ "errorCode": null,
+ "errorMessage": "Superseded by isolated argmax on best E02 after E06 failed to improve score",
+ "queuedAt": "2026-09-19T17:14:50.797185+00:00",
+ "startedAt": null,
+ "finishedAt": "2026-09-19T17:20:11.534967+00:00",
+ "createdAt": "2026-09-19T17:14:49.703834+00:00",
+ "result": null,
+ "cancelRequested": false
+}

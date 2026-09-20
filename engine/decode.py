@@ -468,18 +468,9 @@ class DecodeState:
         # latency that a synchronize after every replay adds to each one.
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         times = []
-        for _ in range(4):
+        for _ in range(5):
             self.row_position.fill_(self.shape[1])
             torch.cuda.synchronize(self.device)
-            # One replay outside the interval. After a synchronize the GPU runs
-            # ``start.record()`` and then idles until the host gets the first
-            # launch across, and under the sandboxed host that gap is tens of
-            # microseconds -- charged to the first pass of every group, which is
-            # exactly the bias ``min(times)`` cannot average away. With a pass
-            # already running when the interval opens, the four timed replays
-            # are genuinely back to back. Four groups of five keeps the 20
-            # replays this loop always cost.
-            self.spec_graph.replay()
             start.record()
             for _ in range(4):
                 self.spec_graph.replay()

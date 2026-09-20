@@ -80,13 +80,17 @@ def _propose(
         seeded = (hint >= 0) & (hint != first) & (TOKENS - 1 - drafts >= 2)
         siblings = tl.where((lanes == 0) & seeded, hint, siblings)
         count += seeded.to(tl.int32)
+        # Maintain membership as siblings are inserted. Broadcasting every
+        # history candidate against all sibling lanes repeats a BLOCK x
+        # BLOCK_S comparison/reduction although each iteration adds one ID.
+        taken = (after == first) | (after == -1) | (seeded & (after == hint))
         for _ in tl.static_range(ALTERNATES):
-            taken = (after == first) | (tl.sum((after[:, None] == siblings[None, :]).to(tl.int32), axis=1) > 0)
             choice = tl.max(tl.where(one & (taken == 0), rank, -1), axis=0)
             usable = (choice >= 0) & (count < LANES)
             candidate = tl.load(base + tl.maximum(choice, 0) % SIZE + 1)
             siblings = tl.where((lanes == count) & usable, candidate, siblings)
             count += usable.to(tl.int32)
+            taken = taken | (usable & (after == candidate))
         for entry in tl.static_range(TOP):
             candidate = tl.load(successor + last * TOP + entry)
             fresh = (candidate != first) & (tl.sum((siblings == candidate).to(tl.int32), axis=0) == 0)
