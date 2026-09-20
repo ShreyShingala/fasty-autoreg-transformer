@@ -2711,3 +2711,35 @@ dryfter again (`4110d16`) as a **contemporaneous control** - necessary because
 the same margin-1.0 tree scored 1145.0 earlier and 1130.9 on the revert an hour
 later. The drift is still the single largest source of error in every
 comparison here.
+
+## Does a major architectural change exist? The arithmetic says no - and that is good news
+
+Every remaining lever with its measured or estimated ceiling:
+
+| lever | ceiling | basis |
+| --- | ---: | --- |
+| kernels / GEMMs | 0% | 85% of achievable streaming; both split directions -4.3% |
+| kernel fusion | 0% | node = 1.1 us, and every epilogue forces SPLITS=1 and costs more than it saves |
+| megakernel | +0.8% | a grid barrier costs about what a node costs |
+| draft policy | +3.1% | hindsight ORACLE bound; we already capture 7-9% of it |
+| relaxed acceptance | +3.0% | measured +1 to +3%; the margin saturates at 1.0 |
+| pacing, both clamps | +2.0% | short floor +0.6% measured, PACE_MEDIAN untested |
+| prefill | +4.0% | TTFT is 51% of public-1, but we already run it ~2x faster than native |
+
+**Compounded: ~1300 from 1145.** Segfault is at 1280. So there is no missing
+architectural secret that we must find to be competitive - there is a list of
+levers that each have to actually land. That is a different problem, and a
+better one: it is execution, not invention.
+
+Two caveats on that table, stated because they are where it could be wrong.
+**The prefill 4% is an estimate, not a measurement** - TTFT is 50.7% of the
+public-1 sample and we run prefill at ~52% of the naive FLOP roofline, but
+cuBLAS realistically tops out near 75%, and we are already about twice as fast
+as native there, so the honest headroom is 15-20% of TTFT rather than 50%.
+**The draft 3.1% was derived under EXACT acceptance** and the acceptance rule
+has since changed; that oracle bound is being re-derived under the margin now.
+
+Things checked and already in place, so not levers: prefill attention already
+uses the Flash SDPA backend with GQA (`attention.py`), the prompt is already a
+draft source (`history[:, :length].copy_(prompt_ids)`), and the lm_head already
+runs last-token-only during prefill.
