@@ -76,3 +76,4 @@ d0dca7c	0.0	0	0	0	crash	Reset the engine to the 1144.3 tree; add only the named 
 661376a	1122.2	323.4	533.3	3246.2	discard	Time the verify pass with a replay already in flight
 720efca	0.0	0	0	0	crash	Word-sized embedding rows and an incremental sibling mask
 2cd0d19	1121.0	322.5	522.0	3211.8	discard	Speculate above 16 sequences
+0dbe286	1105.5	303.3	532.7	3172.9	discard	Take the fused lm_head argmax by default

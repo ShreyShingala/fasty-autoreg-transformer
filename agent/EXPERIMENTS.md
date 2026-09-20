@@ -2227,3 +2227,35 @@ launch is identical, and no timing can change. Two outcomes, both useful:
 Queued alongside the base re-draw on 0xDeadBeaf (`b9b78ea`, `engine/`
 byte-identical to the base), which tests whether the bar itself has moved.
 Gates: unit tests, `archive ok 46073 bytes`, `SMOKE OK 77s`.
+
+## Where the 4.03 ms actually goes, and what is left
+
+| component | time | bytes | of peak |
+| --- | ---: | ---: | ---: |
+| GEMMs | 3.05 ms | 8.639 GB | **85%** |
+| attention | 0.35 ms | 0.078 GB | 7% |
+| ~144 small kernels | 0.42 ms | 0.300 GB | 21% |
+| argmax + bookkeeping | 0.13 ms | 0.010 GB | 2% |
+| whole pass | 4.03 ms | 8.045 GB | 60% |
+
+The GEMMs are effectively finished: 85% of achievable streaming, and candidate
+103 proved the remaining knob is at a local optimum. That is three quarters of
+the pass with ~0.1-0.2 ms left in it.
+
+The other 0.90 ms looks wasteful at 13% of peak but mostly is not. A kernel
+launch costs ~1.1 us (measured) and an HBM load-to-use ~0.6 us, so **144 small
+kernels have a 0.24 ms floor no matter what they do**. Splitting a row across
+more CTAs does not help either: `_add_rms_norm` runs 16 CTAs of 1056 slots and
+costs 3.5 us, but chunking its row needs a second launch, and two launches at
+the 1.7 us floor is 3.4 us. The occupancy is bad and it is also nearly
+irrelevant.
+
+**That leaves attention as the only component with real room**: 0.35 ms against
+a 0.023 ms byte floor and a 0.06 ms launch floor, so ~0.27 ms - 6.7% of the
+pass - is recoverable if low occupancy is the cause. It runs 128 CTAs of 1056
+at batch 1. Candidate 108 is the first thing ever to offer it a layout with
+more programs rather than fewer.
+
+**So candidates 107 and 108 are the architecture's last untested levers of any
+size.** If both come back flat, the incremental line on this engine is finished
+and the honest move is to stop spending runs on it.
