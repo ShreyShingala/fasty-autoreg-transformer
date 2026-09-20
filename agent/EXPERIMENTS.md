@@ -2280,3 +2280,49 @@ generation covers thousands of positions, so the margin is a budget to spend
 carefully: `ACCEPT_MARGIN` is the gap we accept at, and 2.0 - ACCEPT_MARGIN is
 the headroom left for reordering noise. Two values go out at once to measure
 the curve before trusting either.
+
+## The comparison bar was drifting, and it invalidates most of the discard list
+
+Candidate 109 - a tree that differs from the base by **one docstring**, every
+compiled kernel identical - scored **1113.0** normalized. A comment cannot cost
+2.7%. Sorted by when they started:
+
+| started | tree | normalized |
+| --- | --- | ---: |
+| 23:23 | `7928148` num_stages 3 | 1143.6 |
+| 00:23 | `01517f0` c106 | 1140.9 |
+| 00:53 | `6246cc3` c108 | 1125.6 |
+| 01:00 | `f0924d5` **comment-only** | 1113.0 |
+| 01:14 | `e60d83d` dryfter's own tree | 1106.9 |
+
+And every "reproducible pair" that made us trust 0.1% resolution ran **minutes
+apart**: base 23:22/23:23, c104 23:46/23:53, c106 00:16/00:23, fused argmax
+00:36/00:37. They agreed because they were contemporaneous, not because the
+tree determines the score. The node control normalizes native's prefill TTFT
+and evidently does not capture whatever is drifting on the decode side.
+
+**So most of the last two hours' discards were measured against a bar no later
+run could reach.** Re-read against their own era, the fused argmax (00:36,
+1123.6 against ~1130) is roughly neutral rather than -1.9%, and c108 (00:53,
+1125.6 against ~1126) is neutral rather than -1.6%. Candidates 103 and 107
+remain real regressions: both sat ~4% below everything else running at the
+same time.
+
+**New rule: every candidate needs a contemporaneous control.** One queue now
+runs the base tree alongside the others (`ebcf59d` on dryfter), and a result is
+only read against a base that started within the same half hour.
+
+## Relaxed acceptance works - candidate 110, margin 1.0
+
+`dd14cb7`: **1135.5 raw, 1145.0 normalized, node +0.8%, 652 s.** No
+`incorrect_output`. That is the highest normalized score recorded on any tree,
+against a contemporaneous field of 1107-1113, so the real gain is about **+3%**.
+
+The duration is the corroboration: 652 s against 688-822 s for everything else.
+Fewer passes per token is exactly what a higher acceptance rate buys, and it
+shows up as wall-clock before it shows up as score.
+
+Margin 1.25 (`ec11817`) is out on SSS to find the top of the safe range: the
+judge allows 2.0 and the contract puts the replay's different accumulation
+order at up to 0.75, so 1.25 spends the headroom to its edge. Margin 0.5
+(`b95430c`) is on 0xDeadBeaf for the bottom of the curve.

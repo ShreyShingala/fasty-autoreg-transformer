@@ -1,0 +1,23 @@
+{
+ "id": "d843270c-03ea-4f58-8cf3-50d2df6341c7",
+ "submissionId": "cc38ba3b-5537-4eb5-9c36-05ad640ce129",
+ "teamId": "157bfb7c-503c-48b6-98cb-d9b4b50b0f28",
+ "challenge": "decode",
+ "mode": "official",
+ "state": "canceled",
+ "priority": 10,
+ "attempt": 2,
+ "maxAttempts": 3,
+ "submissionDigest": "f48f80d953ef402d1186b2c5015df45806139dbbb869e4420f4fbbee9361b171",
+ "challengeSpecDigest": "b103e41b682f2e7c1dead713db0a4d104d0045b53162efdd7b4039fd51562ee0",
+ "runtime": "triton-cu124-py311",
+ "commitSha": "b9b78eadaa56a5355b7a8782b22abc9bcd03a1e3",
+ "errorCode": "harness_error",
+ "errorMessage": "Terminated: the run exceeded the 15-minute time limit.",
+ "queuedAt": "2026-09-20T00:53:49.892260+00:00",
+ "startedAt": "2026-09-20T01:05:36.137142+00:00",
+ "finishedAt": "2026-09-20T01:20:52.696723+00:00",
+ "createdAt": "2026-09-20T00:53:48.575899+00:00",
+ "result": null,
+ "cancelRequested": true
+}

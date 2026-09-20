@@ -77,3 +77,5 @@ d0dca7c	0.0	0	0	0	crash	Reset the engine to the 1144.3 tree; add only the named 
 720efca	0.0	0	0	0	crash	Word-sized embedding rows and an incremental sibling mask
 2cd0d19	1121.0	322.5	522.0	3211.8	discard	Speculate above 16 sequences
 0dbe286	1105.5	303.3	532.7	3172.9	discard	Take the fused lm_head argmax by default
+59d71c8	1094.0	308.3	514.7	3201.5	discard	Split the projections to fill the machine, not to reach 512 programs
+dd14cb7	1135.5	318.7	528.7	3249.5	discard	Accept a drafted token within ACCEPT_MARGIN logits of the argmax
