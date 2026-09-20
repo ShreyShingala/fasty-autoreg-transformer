@@ -79,3 +79,4 @@ d0dca7c	0.0	0	0	0	crash	Reset the engine to the 1144.3 tree; add only the named 
 0dbe286	1105.5	303.3	532.7	3172.9	discard	Take the fused lm_head argmax by default
 59d71c8	1094.0	308.3	514.7	3201.5	discard	Split the projections to fill the machine, not to reach 512 programs
 dd14cb7	1135.5	318.7	528.7	3249.5	discard	Accept a drafted token within ACCEPT_MARGIN logits of the argmax
+ec11817	1143.7	325.4	534.3	3345.3	discard	Relaxed acceptance at margin 1.25

@@ -2460,3 +2460,33 @@ because `pace_floor()` clamps into `[MIN, PACE_FLOOR]`.
 This is also why the draft refit looked disappointing: acceptance gains were
 being converted into shorter runs instead of higher scores. Fix the pacer and
 every acceptance gain already banked starts counting.
+
+### Correction to the pacing argument, before the runs land
+
+I sized the throttle with the offline lab's **1.83** accepted tokens a pass.
+The engine's own `EXPECTED_PASSES[16] = (0.779, 0.718)` says the platform sees
+**1.28** (short outputs) and 1.39 (long) - those figures are deliberately
+"shrunk toward 1 by the factor seen on the platform's public batch-one case
+(0.57 of the offline gain)". At 1.28 tokens a pass the engine's natural
+interval is 0.779 x pass, and the 0.70 floor sits BELOW it, so the floor would
+be slack and lowering it would do nothing.
+
+The evidence is genuinely split, and I should not have stated it as settled:
+
+- **For the floor binding:** batch-1 TPOT barely moved across trees with very
+  different acceptance - control 2.925, margin 1.0 2.900, margin 1.25 2.831 -
+  and 0.70 x 4.03 ms = 2.82 ms lands right on top of those numbers.
+- **Against:** if the floor bound, a sample's wall-clock would be
+  `outputs x pace_seconds` regardless of acceptance, yet the relaxed runs
+  finished 15% sooner.
+
+The two dispatched floors settle it for the price of runs already spent.
+
+One thing the code comments make clear and I had not weighed: the floor was
+calibrated against the spread gate offline - "five unpaced batch-one samples
+break the 25% spread gate 74-96% of the time; a 0.70 floor never did, **0.65
+did 3.5%**", and `PACE_FLOOR_LONG = 0.60` because 128-token outputs average
+their acceptance out. So **0.58 is well outside the calibrated range and may
+come back `unstable_timing`**. That is an acceptable probe - a failed run does
+not replace a team's best - but it is a probe, not a candidate, and the thesis
+that relaxed acceptance tightens the distribution is what it is testing.
