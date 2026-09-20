@@ -2326,3 +2326,25 @@ Margin 1.25 (`ec11817`) is out on SSS to find the top of the safe range: the
 judge allows 2.0 and the contract puts the replay's different accumulation
 order at up to 0.75, so 1.25 spends the headroom to its edge. Margin 0.5
 (`b95430c`) is on 0xDeadBeaf for the bottom of the curve.
+
+## The margin curve, and a drift-free way to read it
+
+| margin | normalized | duration | tree |
+| ---: | ---: | ---: | --- |
+| 0.0 (exact) | 1143.7 | 692 s | base |
+| 0.5 | 1115.9 | 781 s | `2d200b5` |
+| 1.0 | **1145.0** | **652 s** | `dd14cb7` |
+
+The scores are contaminated by the drift, but the **durations are not**, and
+they say the same thing much more clearly: margin 1.0 finishes a whole run 129
+seconds - 16% - faster than margin 0.5. Warmup varies by a few tens of seconds
+at most, so that gap is samples, and samples are shorter only when a pass
+yields more tokens. Acceptance is doing exactly what it was supposed to.
+
+**Use duration as the corroborating signal for any acceptance change.** It is
+immune to whatever is moving the hidden score hour to hour, and for this lever
+it is nearly a direct readout of passes per token.
+
+Margin 1.25 is on SSS (`ec11817`) to find the top of the safe range. The
+sibling extension (`0f395ff`, margin applied to the alternative slots as well
+as the chain, judged against position 0) is on 0xDeadBeaf.
