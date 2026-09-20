@@ -2058,3 +2058,25 @@ shapes that do not exist.
 This also removes the leading explanation for Segfault's jump. Their +10.5%,
 now +134.6 over their old score, is not the batch cap and is not fusion at 1.1
 us a node.
+
+## Paired draws agree to 0.1%, so the readability bar was far too high
+
+The partner tokens let the same tree be measured twice on different queues:
+
+| tree | draw A | draw B | spread |
+| --- | ---: | ---: | ---: |
+| candidate 106 | 1139.8 (SSS) | 1140.9 (0xDeadBeaf) | 0.10% |
+| candidate 104 | 1121.5 (dryfter) | 1122.1 (Silver Bullet) | 0.05% |
+| the base tree | 1143.7 (`c758faf`) | 1143.6 (`7928148`) | 0.01% |
+
+Three pairs, all within 0.1%. The 1.33% standard deviation quoted from 24
+plateau runs is the spread of the **raw** score, which is dominated by node
+speed; once `referenceTtftMs` normalizes that out, a repeat of the same tree
+lands within about a tenth of a percent. Durations still vary (704 s against
+804 s for the same candidate-106 tree), so wall-clock is node-bound too.
+
+**This retires the "a change must clear ~3% to be readable in one run" rule.**
+It is why three separate ~2% regressions were real rather than noise, and it
+means a 0.5% win is worth a slot. Keep using the normalized column, keep
+discarding any run whose node is more than ~5% off, and prefer a second draw
+on a partner queue when a result decides something expensive.
