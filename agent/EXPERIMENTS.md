@@ -2841,3 +2841,42 @@ is ever why a pass starts late.
 Built on the trunk (exact greedy + the pacing stack). The trunk is still
 measuring, so a **control of it goes out in the same window** (`4cc867f`) -
 necessary because the bar drifts ~3% an hour.
+
+## The draft ceiling re-derived under a margin: it does not move
+
+The +3.1% hindsight-oracle bound was computed under EXACT acceptance, so it was
+the one number that might have been badly understated once the acceptance rule
+changed. It was not. Re-derived over the cached traces (logit gaps recovered by
+one teacher-forced forward per trace, since the cache held token ids only):
+
+| acceptance margin | oracle bound, chain only | oracle bound, siblings too |
+| ---: | ---: | ---: |
+| 0.0 | -3.22% | -3.23% |
+| 1.0 | **-3.49%** | **-3.70%** |
+| 1.5 | -3.58% | -3.87% |
+
+A margin buys the oracle **0.3 to 0.5 points**. At block size 2 the oracle is
+exactly 0.0% at every margin. **The +3.1% stands and the draft side is closed.**
+
+**And it explains why relaxed acceptance only ever paid +1 to +3% on the
+platform.** Near-ties are common - 336 positions per thousand have a runner-up
+within 1.0 logits - but at the positions where our draft-1 is actually WRONG,
+only **9.9%** of those drafts are within 1.0 (5.2% at 0.5, 17.9% at 2.0). The
+drafter misses by picking a different word, not by losing a near-tie. The
+margin can only rescue the near-ties, and the drafter rarely fails that way.
+
+**The lab predicted candidate 111 correctly.** It scores (8, 12, 15, 15) as
+0.69-1.07% WORSE on passes at every margin; the platform measured it about 1%
+down. A cross-validated refit of `DRAFTS_BY_MATCH` under a margin gains
+0.0-0.1% out of fold. Chain depth and budget allocation are both closed, and
+the agreement is worth noting - it means the lab's other verdicts carry weight.
+
+The one thing the simulation still likes is the **sibling margin** (`0f395ff`),
+worth -2.6 points of passes beyond chain-only, biggest at T4/T8, and unlike the
+budget policies it lifts p10 by 5.7% so the pacer would not discard it. But
+that requires the margin, and **the margin fails `incorrect_output` about one
+run in nine**. Its total value is a few percent against a gap of 12%, so it is
+not the path; it stays disabled.
+
+**Redirect: prefill.** With the draft side closed and the kernels finished,
+that is the only untouched lever of any size left.
