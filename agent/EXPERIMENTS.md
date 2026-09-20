@@ -2682,3 +2682,32 @@ short-0.65 tree (`233924f`, 1138.0). It does the same spread-gate job the floor
 does - stopping one fast generation running away from the rest - and the gate
 has had room at every floor tried. If it pays, the floor becomes worth
 revisiting below 0.65, because the two interact and only their maximum matters.
+
+## The two-clamp model, confirmed by prediction
+
+Short floor 0.62 was the test. If the floor bound, TPOT would be
+0.62 x 4.14 = 2.57 ms. Observed: **3.088 ms** - essentially the 3.111 ms that
+floor 0.58 produced.
+
+| short floor | predicted if floor binds | observed TPOT | normalized | binding clamp |
+| ---: | ---: | ---: | ---: | --- |
+| 0.70 | 2.90 | 2.925 | 1131.4 | floor |
+| **0.65** | 2.69 | **2.691** | **1138.0** | floor |
+| 0.62 | 2.57 | 3.088 | 1105.6 | `PACE_MEDIAN` |
+| 0.58 | 2.40 | 3.111 | 1118.5 | `PACE_MEDIAN` |
+
+**0.65 is the lowest useful floor until `PACE_MEDIAN` moves.** Everything below
+it was measuring the same second clamp at ~3.1 ms.
+
+`PACE_FLOOR_LONG` is also settled: 0.66 scored 1132.5 against 0.60's 1138.0,
+and 0.56 and 0.52 lost by more. **0.60 is right for long outputs** - it wanted
+neither direction, which is a real answer and not a null one, because both
+directions were tried.
+
+Trunk now carries short floor 0.65, long floor 0.60 and `PACE_MEDIAN` 0.80
+(`6ce1451`). `PACE_MEDIAN` 0.72 (`fef469f`) is on 0xDeadBeaf as the far point,
+so one run locates the knee rather than three, and the short-0.65 tree goes to
+dryfter again (`4110d16`) as a **contemporaneous control** - necessary because
+the same margin-1.0 tree scored 1145.0 earlier and 1130.9 on the revert an hour
+later. The drift is still the single largest source of error in every
+comparison here.
