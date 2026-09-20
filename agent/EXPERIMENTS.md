@@ -2909,3 +2909,40 @@ margin only reaches the 9.9% of draft-1 misses that are near-ties), the kernels
 are finished, pacing is nearly exhausted at +0.6% banked. Prefill's ~4.4% is
 now the largest single item, and it is not enough on its own for the 12% gap -
 which is the honest state of things rather than a reason not to take it.
+
+## A clean win at last: one more verify pass in flight (+0.9%)
+
+| tree | normalized | duration |
+| --- | ---: | ---: |
+| trunk `841a0d8` | 1123.4 | 788 s |
+| CONTROL `4cc867f`, identical tree | 1124.4 | 813 s |
+| **`7eb8dd5`, SPEC_LOOKAHEAD_WIDE 4** | **1134.0** | 810 s |
+
+The trunk and its contemporaneous control agree to **0.1%**, so for once the
+gap is the change and not the hour. `SPEC_LOOKAHEAD_WIDE` 3 -> 4 is worth
+**+0.9%**, and it cannot change a token - it only queues one more pass ahead of
+the host. Adopted (`c8bf159`).
+
+This also says something about the engine: above batch two the GPU really was
+waiting on the host between passes, and a constant nobody had measured was the
+reason. Worth remembering that the comment beside it already explained exactly
+what it was for.
+
+Pushed further on 0xDeadBeaf (`e6784eb`): lookahead 6 above batch two and 3 at
+batch one or two, the latter never touched at all. Linear-ish gain means the
+knee is further out; flat means depth saturates at 4.
+
+## Prefill chunking dispatched (`073d3bd`)
+
+Built on the lookahead-4 trunk, whose tree is the measured 1134.0. Blocks the
+prefill MLP at 1024 rows so the `[8192, 19456]` gate/up tile is 39.8 MB and
+stays inside the 50 MB L2 instead of round-tripping 318.8 MB through HBM per
+layer. Sized at about +6 ms of a 120 ms prefill after paying 21 extra launches
+a layer; TTFT is 50.7% of the public-1 sample.
+
+Process note: this change was lost once. It was patched into the working tree,
+gated, and then a `git checkout -B` for a different candidate wiped it before
+it was committed - the later `git checkout <branch> -- engine/layers.py` then
+silently restored nothing, and only a `grep -c` caught it. **Commit a candidate
+before switching branches, and verify the file actually contains the change
+after any cross-branch checkout.**
