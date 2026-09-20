@@ -2603,3 +2603,30 @@ and, unlike a slow candidate, a failed one tells you nothing about speed.
 
 Standing rule this reinforces: a candidate that turns on a code path nothing
 has ever executed is not a "small single edit", whatever the diff size.
+
+## The scored workloads include long outputs, and the short floor is a real win
+
+Separating the two pacing constants paid off immediately:
+
+| tree | public-0 TPOT | normalized | duration |
+| --- | ---: | ---: | ---: |
+| control, 0.70 / LONG 0.60 (`ebcf59d`) | 2.925 | 1131.4 | 768 s |
+| 0.65 **and** LONG 0.56 (`5d4070a`) | 2.689 | 1129.8 | 678 s |
+| **0.65, LONG left at 0.60** (`3e5f58e`) | 2.691 | **1138.0** | 698 s |
+
+The two 0.65 runs have the same batch-1 TPOT, 2.691 against 2.689, so they
+paced short outputs identically. The 0.7% between them is entirely
+`PACE_FLOOR_LONG`, and lowering it to 0.56 is what cost it. **So the scored set
+contains long-output (>= 96 token) workloads**, and they want their floor left
+alone - the contract's own note that long generations average their acceptance
+out is doing real work there.
+
+That also rescues the previous tick's null result: the short floor was never
+worthless, its gain was being cancelled by the long floor in the same run.
+Against a contemporaneous control, 0.65-short is **+0.6%**, with 8% better
+batch-1 TPOT and a 70 s shorter run.
+
+Two things follow. Floor 0.58 cannot be read either - it moved both constants -
+so 0.62 short-only (`e48a404`, dryfter) is the real next point. And the
+hidden-shape question now has one answer: at least one scored workload runs
+96 or more output tokens.
