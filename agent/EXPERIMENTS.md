@@ -2205,3 +2205,25 @@ Three things follow.
 
 The base re-draw queued on 0xDeadBeaf (`b9b78ea`) tests the remaining
 alternative - that the bar itself has moved.
+
+## Candidate 109 - a comment-only tree (diagnostic, dryfter `b9532c1`)
+
+Nine substantive changes in six files have all landed 1.9-4.3% below the base
+and cluster near -2%, two of them proven bit-identical offline. Nine
+mechanisms do not cost the same 1.9% by coincidence, so the remaining question
+is what the cost is attached to.
+
+This tree differs from `97d43d2` by one docstring. The archive differs, and so
+the source hash every Triton kernel is keyed by; every generated PTX and every
+launch is identical, and no timing can change. Two outcomes, both useful:
+
+- **~1143.7** - the tax is paid by what a change *compiles to*. Then the
+  nine results are real, the base is a sharp optimum, and the way forward is
+  changes big enough to clear a ~2% penalty.
+- **~1122** - the tax is attached to the commit rather than the code, and
+  every candidate so far has been compared against a bar no edited tree can
+  reach. Then the whole discard list has to be re-read against the right bar.
+
+Queued alongside the base re-draw on 0xDeadBeaf (`b9b78ea`, `engine/`
+byte-identical to the base), which tests whether the bar itself has moved.
+Gates: unit tests, `archive ok 46073 bytes`, `SMOKE OK 77s`.
