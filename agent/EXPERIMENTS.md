@@ -2570,3 +2570,36 @@ run changed both at once, so its null result cannot distinguish "the floor does
 not matter to the hidden set" from "the hidden set is long-output and 0.56 was
 too aggressive there". If the LONG probe moves the score, the scored workloads
 are >= 96 output tokens and that is worth knowing on its own.
+
+## Candidate 112 FAILED `incorrect_output` - reverted
+
+`84b810b`, the 32-token verify block at batch one, **failed with
+`incorrect_output`**. Reverted at once to `dd14cb7` (relaxed acceptance at
+margin 1.0, 1145.0 normalized, 652 s), which has passed every run it has had.
+This is the second `incorrect_output` of the project; the first was the shared
+Triton cache race.
+
+What made it different from the changes around it: **a 32-token block had never
+executed anywhere.** Batch one took `sizes[:1]` and larger batches use 2- or
+4-token blocks, so `DRAFTS_BY_MATCH[32]`, the T=32 tree mask and the T=32
+speculation kernels were new code paths, not new constants. The smoke run
+exercised block 32 in 4 of 12 generations with 0 mismatches and a worst
+teacher-forced gap of 0.375, so whatever broke needs either a longer generation
+or a shape the 4-layer smoke model does not reach.
+
+The likelier of the two mechanisms is the interaction, not the block: the chain
+depths I gave it, (10, 16, 27, 29), leave only three sibling slots, so a pass is
+almost entirely chain - and under relaxed acceptance a 29-deep chain of
+near-ties is far more positions per pass that must each stay inside the judge's
+2.0 than anything we have shipped. Candidate 111 had already shown that moving
+slots from siblings to chain is a loss on speed; this says it can also be a
+loss on correctness.
+
+**Do not retry the 32-token block without reproducing the failure offline
+first.** `smoke_engine.py` prints the teacher-forced gap for every emitted
+token; run it at block 32 with a long generation and look for a gap
+approaching 2.0. A slot is the wrong place to find this out - it costs a run
+and, unlike a slow candidate, a failed one tells you nothing about speed.
+
+Standing rule this reinforces: a candidate that turns on a code path nothing
+has ever executed is not a "small single edit", whatever the diff size.
