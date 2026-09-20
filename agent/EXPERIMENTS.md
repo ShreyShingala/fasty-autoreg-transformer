@@ -3043,3 +3043,36 @@ queue there may be pointless or may still hide host latency behind the wait.
 
 **Standing rule, now earned twice: change one constant per run, even when two
 look like the same knob.**
+
+## Prefill chunking: DISCARD, and the reasoning error is worth keeping
+
+`b47b26e`: **1108.1 raw, 1106.0 normalized, 665 s** - and the direct evidence is
+TTFT, which is what prefill controls: **public-1 120.3 -> 127.6 ms, public-2
+109.1 -> 119.4 ms**. Prefill got 6-9% SLOWER.
+
+The mistake: I costed the activation tile and ignored the weights.
+
+| per layer | size |
+| --- | ---: |
+| gate_up weight | 99.6 MB |
+| down_proj weight | 49.8 MB |
+| the 1024-row activation tile | 39.8 MB |
+| **L2** | **50 MB** |
+
+The weights alone are 149 MB and stream through L2 on every block, so the
+activation tile is evicted long before `swiglu` reads it - and chunking then
+re-reads those weights **eight times instead of once**: 43 GB extra across 36
+layers, about 13 ms, against the 6.8 ms of activation traffic it was meant to
+save. Net -6 ms predicted, +7.3 ms observed on public-1.
+
+**The general point: at prefill the weight read is amortised over the rows in
+the block, so fewer rows means proportionally more weight traffic.** That is
+the opposite regime from decode, where the row count is tiny and the weights
+dominate no matter what. Any "make the working set fit in cache" argument at
+prefill has to count the weights streaming through the same cache, and at
+149 MB a layer they do not fit under any blocking.
+
+This also lowers the prefill estimate in the lever table. The +4.0% there
+assumed ~29 ms was reachable; the one concrete mechanism for reaching it is now
+measured backwards, and prefill is already ~1.9x faster than native. Treat
+prefill as near its practical limit unless a genuinely fused kernel appears.
