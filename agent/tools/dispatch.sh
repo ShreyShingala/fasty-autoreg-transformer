@@ -6,9 +6,9 @@
 set -e
 case "$1" in
   mate)   url=https://github.com/john-jpet/fast-transformer ;;
-  # Silver Bullet is HANDED OVER (2026-09-20): another agent is building a new
-  # architecture there from scratch. Do not dispatch to it.
-  silver) echo "silver is handed over to another agent; do not dispatch" >&2; exit 2 ;;
+  # Silver Bullet is another agent's queue as of 2026-09-20: they are building a
+  # new architecture there. The target stays wired up for them; we do not use it.
+  silver) url=https://github.com/sivakovivan/silver-transformer ;;
   dead)   url=https://github.com/aparajitamehtatbsw-dot/fast-transform-super-fast ;;
   *) echo "usage: dispatch.sh <mate|silver|dead> <sha> <message>" >&2; exit 2 ;;
 esac
