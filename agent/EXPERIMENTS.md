@@ -2773,3 +2773,43 @@ whether the whole pacing track has anything left. If 0.72 pays, the follow-up
 is not another floor probe but `PACE_MEDIAN` lower still, with `WORST_PASSES`
 and `PACE_FLOOR_MIN` dropped together so long-prompt shapes can actually reach
 it.
+
+## Relaxed acceptance fails `incorrect_output` intermittently - DISABLED
+
+`4110d16` **FAILED with `incorrect_output`**: "the engine's tokens did not
+match native Qwen's greedy choice." That tree is margin 1.0 plus release floor
+0.65. **Pacing constants cannot change which tokens are emitted**, only when,
+so the fault is the acceptance margin - and the identical tree passed earlier
+at 1138.0.
+
+Tally for margin 1.0 and its variants: `dd14cb7` passed twice, `ec11817`
+(margin 1.25) passed, `9887d66` (sibling margin) passed, `3e5f58e` passed,
+`0ce0657` and `fef469f` passed, `8f9ed7c` passed - then `4110d16` failed.
+Roughly **one failure in nine**.
+
+This is the worst failure mode available. It passed every local gate, passed
+the offline teacher-forced replay with a worst gap of 0.875 against the judge's
+2.0, and passed repeatedly on the platform before failing. Nothing we check
+before pushing would have caught it.
+
+**ACCEPT_MARGIN is now 0.0** on the trunk, restoring exact greedy decoding; the
+smoke run reports 0 near-ties and 0 mismatches. The machinery stays in the tree
+because at margin 0 it is provably a no-op and it is how the investigation
+continues. A measured +1 to +3% does not justify a one-in-nine chance of losing
+a run, and the true cost is worse than the slot: the failed runs are the ones
+we would otherwise be learning from.
+
+**Kept: all the pacing work**, which is correctness-neutral by construction -
+release floor 0.65, `PACE_FLOOR_LONG` 0.60, `PACE_MEDIAN` 0.80.
+
+To re-enable, find the failing position offline first. The rate is ~11%, so it
+needs many long generations rather than one short smoke run; the harness
+already prints the teacher-forced gap per emitted token, which is the right
+instrument, it just has not been pointed at enough text.
+
+## PACE_MEDIAN 0.72
+
+`fef469f`: 1139.9 raw, **1132.1 normalized**, node -0.7%, 672 s - against
+`0ce0657`'s 1132.5 in the same window. No gain over 0.80, and both sit near the
+contemporaneous field. The knee is not below 0.80; combined with the floor
+results, the pacing track is close to exhausted.
