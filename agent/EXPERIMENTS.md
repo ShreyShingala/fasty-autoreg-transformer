@@ -2384,3 +2384,32 @@ takes the 16-token block from (5, 8, 13, 14) to (8, 12, 15, 15).
 The kernels, by contrast, are measured finished: GEMMs at 85% of achievable
 streaming, the small kernels at their 1.1 us launch plus 0.6 us latency floor,
 and both directions of the split knob losing 4.3%.
+
+## The margin saturates at 1.0
+
+| margin | normalized | duration | raw |
+| ---: | ---: | ---: | ---: |
+| 0.0 (exact base) | 1143.7 | 692 s | 1144.3 |
+| 0.5 | 1115.9 | 781 s | 1121.6 |
+| **1.0** | **1145.0** | **652 s** | 1135.5 |
+| 1.25 | 1142.5 | 661 s | **1143.7** |
+
+Margin 1.25 is the same run as margin 1.0 - 661 s against 652 s, and 1142.5
+against 1145.0, both inside the drift. **Spending more margin buys nothing**,
+which is exactly what the offline near-tie measurement predicted: the
+judge-side gap was 1.188 at both 1.5 and 1.75 because accepted near-ties are
+mostly small-gap, so raising the ceiling admits almost no extra tokens.
+
+Neither run produced `incorrect_output`, so the mechanism is safe at 1.25 and
+the margin stays at 1.0 for the headroom.
+
+Both relaxed runs also finished in 652-661 s against 692-781 s for everything
+else, and that is the part that is not drift: fewer passes per token.
+
+## Candidate 111 - chain depths refitted (SSS `63c5fd0`)
+
+The margin is done; the tree is not. `DRAFTS_BY_MATCH` was fitted under exact
+acceptance and the 16-token block goes from (5, 8, 13, 14) to (8, 12, 15, 15).
+Built on the measured margin-1.0 tree, not on the unmeasured sibling variant,
+so it is one change against a base with a number. Gates: unit tests, archive
+ok, `SMOKE OK 85s`, worst teacher-forced gap 0.875 against the judge's 2.0.
